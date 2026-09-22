@@ -527,6 +527,8 @@ patternProperties:
     description: Firefly
   "^focaltech,.*":
     description: FocalTech Systems Co.,Ltd
+  "^focuslcds,.*":
+    description: Focus LCDs
   "^forlinx,.*":
     description: Baoding Forlinx Embedded Technology Co., Ltd.
   "^freebox,.*":

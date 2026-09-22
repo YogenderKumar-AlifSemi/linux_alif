@@ -17,6 +17,7 @@ properties:
     items:
       - enum:
           - densitron,dmt028vghmcmi-1d
+          - focuslcds,mw405
           - ortustech,com35h3p70ulc
       - const: ilitek,ili9806e
 
