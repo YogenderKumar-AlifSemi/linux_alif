@@ -220,3 +220,4 @@ obj-$(CONFIG_DRM_SPRD) += sprd/
 obj-$(CONFIG_DRM_LOONGSON) += loongson/
 obj-$(CONFIG_DRM_POWERVR) += imagination/
 obj-$(CONFIG_DRM_TES_CDC) += tes/
+obj-$(CONFIG_DRM_ALIF_DW_MIPI_DSI) += alif/

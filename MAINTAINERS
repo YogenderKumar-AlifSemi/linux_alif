@@ -7051,6 +7051,7 @@ M:	Yogender Kumar Arya <yogender.kumar@alifsemi.com>
 L:	dri-devel@lists.freedesktop.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/display/alif,ensemble-dsi.yaml
+F:	drivers/gpu/drm/alif/
 
 DRM DRIVER FOR ALLWINNER DE2 AND DE3 ENGINE
 M:	Maxime Ripard <mripard@kernel.org>

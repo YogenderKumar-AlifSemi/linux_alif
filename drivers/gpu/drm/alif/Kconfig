@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config DRM_ALIF_DW_MIPI_DSI
+	tristate "Alif specific extensions for DW MIPI DSI"
+	depends on DRM && OF
+	depends on COMMON_CLK
+	depends on ARCH_ENSEMBLE || COMPILE_TEST
+	select DRM_DW_MIPI_DSI
+	select GENERIC_PHY
+	select GENERIC_PHY_MIPI_DPHY
+	select MULTIPLEXER
+	imply MUX_GPIO
+	help
+	  Glue for the DesignWare MIPI DSI host on Alif Ensemble
+	  SoCs. Programs the on-chip TX D-PHY for display output and can
+	  export that macro as an RX PHY for a second CSI camera. An
+	  optional GPIO mux (S_CAM_DISP) steers the pads between panel
+	  and camera.
+
+	  If M is selected the module will be called dw_mipi_dsi-alif.
