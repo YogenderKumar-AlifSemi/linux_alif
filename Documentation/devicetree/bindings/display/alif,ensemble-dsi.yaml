@@ -1,0 +1,237 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/alif,ensemble-dsi.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Alif Ensemble DesignWare MIPI DSI host
+
+maintainers:
+  - Yogender Kumar Arya <yogender.kumar@alifsemi.com>
+
+select:
+  properties:
+    compatible:
+      contains:
+        const: alif,ensemble-dsi
+  required:
+    - compatible
+
+description: |
+  Glue around the DesignWare MIPI DSI host on Alif Ensemble SoCs.
+
+  The Ensemble family has a single MIPI D-PHY TX macro owned by this block.
+  It drives the DSI display output and can be turned around and lent to the
+  camera subsystem as an RX macro. The dedicated RX macro stays with the
+  standalone D-PHY driver.
+
+  EXPMST D-PHY control and VBAT power registers belong to the D-PHY node
+  (dphy@4903f000). This host maps them through the alif,dphy phandle
+  without claiming that MMIO.
+
+properties:
+  compatible:
+    items:
+      - const: alif,ensemble-dsi
+      - const: snps,dw-mipi-dsi
+
+  reg:
+    maxItems: 1
+    description: DesignWare MIPI DSI host registers
+
+  reg-names:
+    const: dsi
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    minItems: 3
+    items:
+      - description: DesignWare DSI host APB clock
+      - description: MIPI TX D-PHY configuration clock
+      - description: D-PHY PLL reference clock
+      - description: D-PHY PLL bypass clock, required to lend the TX macro
+          to the camera subsystem
+
+  clock-names:
+    minItems: 3
+    items:
+      - const: pclk
+      - const: tx_clk
+      - const: pll_ref_clk
+      - const: pll_bypass_clk
+
+  "#phy-cells":
+    const: 0
+    description:
+      Present when this node is a PHY provider for the TX macro turned
+      around as an RX D-PHY for the camera subsystem.
+
+  "#address-cells":
+    const: 1
+
+  "#size-cells":
+    const: 0
+
+  alif,dphy:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      Phandle to the Ensemble D-PHY control node that owns the EXPMST
+      D-PHY control and VBAT power registers.
+
+  alif,csi-base:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      Physical base address of the CSI-2 host register block that holds
+      the RX D-PHY test interface. The region is shared with the CSI-2
+      host, so it is mapped without claiming it. Required to register
+      the PHY provider that lends the TX macro to the camera.
+
+  cfg-clk-frequency:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      D-PHY configuration clock in Hz, programmed into CFGCLKFREQRANGE.
+      If omitted, 25000000 is used.
+
+  ref-frequency:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      D-PHY PLL reference clock in Hz. If omitted the rate of pll_ref_clk
+      is used, then 38400000 if that clock reports zero.
+
+  mux-states:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    minItems: 2
+    maxItems: 2
+    description: |
+      MIPI lane mux states. The first named state routes the pads to
+      display (DSI TX), the second to camera (CSI RX).
+
+  mux-state-names:
+    items:
+      - const: display
+      - const: camera
+
+  ports:
+    $ref: /schemas/graph.yaml#/properties/ports
+
+    properties:
+      port@0:
+        $ref: /schemas/graph.yaml#/properties/port
+        description: DPI input from the CDC200 display controller.
+
+      port@1:
+        $ref: /schemas/graph.yaml#/properties/port
+        description: DSI output to a panel or bridge.
+
+    required:
+      - port@0
+      - port@1
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - clock-names
+  - alif,dphy
+
+allOf:
+  - $ref: dsi-controller.yaml#
+  - if:
+      required:
+        - alif,csi-base
+    then:
+      required:
+        - "#phy-cells"
+      properties:
+        clocks:
+          minItems: 4
+        clock-names:
+          minItems: 4
+  - if:
+      required:
+        - mux-states
+    then:
+      required:
+        - mux-state-names
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/clock/alif,ensemble-clock.h>
+    #include <dt-bindings/gpio/gpio.h>
+
+    mux: mux-controller {
+        compatible = "gpio-mux";
+        #mux-state-cells = <1>;
+        mux-gpios = <&gpio15 2 GPIO_ACTIVE_HIGH>;
+    };
+
+    dphy: dphy@4903f000 {
+        compatible = "alif,dphy", "snps,dphy";
+        reg = <0x4903f000 0xb0>, <0x1a609008 0x4>;
+        reg-names = "soc_regs", "vbat";
+        clocks = <&psclks ENSEMBLE_MIPI_RXDPHY_CLK>,
+                 <&psclks ENSEMBLE_MIPI_TXDPHY_CLK>,
+                 <&psclks ENSEMBLE_MIPI_PLLREF_CLK>;
+        clock-names = "rx_clk", "tx_clk", "pll_ref_clk";
+        #phy-cells = <1>;
+    };
+
+    dsi@49032000 {
+        compatible = "alif,ensemble-dsi", "snps,dw-mipi-dsi";
+        reg = <0x49032000 0x1000>;
+        reg-names = "dsi";
+        interrupts = <GIC_SPI 332 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&psclks ENSEMBLE_DSI_APB>,
+                 <&psclks ENSEMBLE_MIPI_TXDPHY_CLK>,
+                 <&psclks ENSEMBLE_MIPI_PLLREF_CLK>,
+                 <&psclks ENSEMBLE_MIPI_BYPASS_CLK>;
+        clock-names = "pclk", "tx_clk", "pll_ref_clk", "pll_bypass_clk";
+        #address-cells = <1>;
+        #size-cells = <0>;
+        #phy-cells = <0>;
+        alif,dphy = <&dphy>;
+        alif,csi-base = <0x49033000>;
+        cfg-clk-frequency = <25000000>;
+        mux-states = <&mux 1>, <&mux 0>;
+        mux-state-names = "display", "camera";
+
+        ports {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port@0 {
+                reg = <0>;
+                dsi_in: endpoint {
+                    remote-endpoint = <&cdc_out_dsi>;
+                };
+            };
+
+            port@1 {
+                reg = <1>;
+                dsi_out: endpoint {
+                    remote-endpoint = <&panel_in>;
+                };
+            };
+        };
+
+        panel@0 {
+            compatible = "focuslcds,mw405", "ilitek,ili9806e";
+            reg = <0>;
+            reset-gpios = <&gpio16 5 GPIO_ACTIVE_LOW>;
+            backlight = <&backlight>;
+            vccio-supply = <&reg_1p8v>;
+            vdd-supply = <&reg_3p3v>;
+
+            port {
+                panel_in: endpoint {
+                    remote-endpoint = <&dsi_out>;
+                };
+            };
+        };
+    };
+...

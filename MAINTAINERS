@@ -7046,6 +7046,12 @@ F:	Documentation/accel/
 F:	drivers/accel/
 F:	include/drm/drm_accel.h
 
+DRM DRIVER FOR ALIF DESIGNWARE MIPI DSI
+M:	Yogender Kumar Arya <yogender.kumar@alifsemi.com>
+L:	dri-devel@lists.freedesktop.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/display/alif,ensemble-dsi.yaml
+
 DRM DRIVER FOR ALLWINNER DE2 AND DE3 ENGINE
 M:	Maxime Ripard <mripard@kernel.org>
 M:	Chen-Yu Tsai <wens@csie.org>
