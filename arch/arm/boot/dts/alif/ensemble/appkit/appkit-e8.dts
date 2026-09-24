@@ -7,6 +7,7 @@
 #include "../common/ensemble-ex.dtsi"
 #include "../common/devkit_ex_dct_defines.h"
 #include <dt-bindings/media/video-interfaces.h>
+#include "../common/serial_panel.dtsi"
 
 / {
 	model = "appkit-e8";

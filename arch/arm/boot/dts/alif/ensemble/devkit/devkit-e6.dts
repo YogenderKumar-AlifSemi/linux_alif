@@ -7,6 +7,11 @@
 #include "../common/ensemble-ex.dtsi"
 #include "../common/devkit_ex_dct_defines.h"
 #include <dt-bindings/media/video-interfaces.h>
+#if CDC200_PARALLEL
+#include "../common/parallel_panel.dtsi"
+#else
+#include "../common/serial_panel.dtsi"
+#endif
 
 / {
 	model = "devkit-e6";
@@ -81,56 +86,6 @@
 		};
 		acodec: simple-audio-card,codec {
 			sound-dai = <&wm8904>;
-		};
-	};
-
-};
-
-&cdc200 {
-	status = CDC200_STATUS;
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_cdc200_0>;
-
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		port@0 {
-			reg = <0>;
-			cdc_out_rgb: endpoint {
-				remote-endpoint = <&panel_in>;
-				bus-width = <24>;
-			};
-		};
-	};
-};
-
-/ {
-	panel: panel {
-		compatible = "lvds-encoder";
-		width-mm = <108>;
-		height-mm = <65>;
-
-		panel-timing {
-			clock-frequency = <33358920>;
-			hactive = <800>;
-			vactive = <480>;
-			hfront-porch = <210>;
-			hback-porch = <46>;
-			hsync-len = <1>;
-			vfront-porch = <22>;
-			vback-porch = <23>;
-			vsync-len = <1>;
-			hsync-active = <0>;
-			vsync-active = <0>;
-			de-active = <1>;
-			pixelclk-active = <1>;
-		};
-		port {
-			panel_in: endpoint {
-				remote-endpoint = <&cdc_out_rgb>;
-				bus-width = <24>;
-			};
 		};
 	};
 };

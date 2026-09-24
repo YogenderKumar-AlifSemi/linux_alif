@@ -73,6 +73,18 @@
 /* DPI defines */
 #define DPI_STATUS "disabled"
 
+/*
+ * Display interface for the CDC200 output path.
+ * Yocto/DCT must select exactly one:
+ *   0 = MIPI DSI (serial_panel.dtsi)
+ *   1 = parallel RGB / DPI (parallel_panel.dtsi)
+ *
+ * Do not include both fragments in one DTB: they share CDC port@0 and
+ * the second overlay overwrites remote-endpoint (dtc graph_endpoint
+ * warning) and can apply RGB pinctrl on a DSI build.
+ */
+#define CDC200_PARALLEL 0
+
 /* CSI defines */
 #define CSI_STATUS "disabled"
 

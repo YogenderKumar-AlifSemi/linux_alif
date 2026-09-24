@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Parallel RGB (DPI) panel graph for Ensemble DevKit.
+ * Mutually exclusive with serial_panel.dtsi; selected when
+ * CDC200_PARALLEL is 1.
+ */
+
+&cdc200 {
+	status = CDC200_STATUS;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_cdc200_0>;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			cdc_out_rgb: endpoint {
+				remote-endpoint = <&panel_in>;
+				bus-width = <24>;
+			};
+		};
+	};
+};
+
+/ {
+	panel: panel {
+		status = CDC200_STATUS;
+		compatible = "lvds-encoder";
+		width-mm = <108>;
+		height-mm = <65>;
+
+		panel-timing {
+			clock-frequency = <33358920>;
+			hactive = <800>;
+			vactive = <480>;
+			hfront-porch = <210>;
+			hback-porch = <46>;
+			hsync-len = <1>;
+			vfront-porch = <22>;
+			vback-porch = <23>;
+			vsync-len = <1>;
+			hsync-active = <0>;
+			vsync-active = <0>;
+			de-active = <1>;
+			pixelclk-active = <1>;
+		};
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&cdc_out_rgb>;
+				bus-width = <24>;
+			};
+		};
+	};
+};
+

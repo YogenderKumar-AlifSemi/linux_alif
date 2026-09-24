@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * MIPI DSI (serial) panel graph for Ensemble DevKit.
+ * Mutually exclusive with parallel_panel.dtsi; selected when
+ * CDC200_PARALLEL is 0.
+ */
+
+/ {
+	mipi_lane_mux: mux-controller {
+		compatible = "gpio-mux";
+		#mux-state-cells = <1>;
+		mux-gpios = <&port15 2 GPIO_ACTIVE_HIGH>;
+	};
+
+	panel_backlight: panel-backlight {
+		compatible = "gpio-backlight";
+		gpios = <&port7 1 GPIO_ACTIVE_HIGH>;
+		status = DSI_STATUS;
+	};
+};
+
+&cdc200 {
+	status = CDC200_STATUS;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			cdc_out_dsi: endpoint {
+				remote-endpoint = <&dsi_in>;
+			};
+		};
+	};
+};
+
+&dsi {
+	mux-states = <&mipi_lane_mux 1>, <&mipi_lane_mux 0>;
+	mux-state-names = "display", "camera";
+	status = DSI_STATUS;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			dsi_in: endpoint {
+				remote-endpoint = <&cdc_out_dsi>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			dsi_out: endpoint {
+				remote-endpoint = <&dsipanel_in>;
+			};
+		};
+	};
+
+	dsi_panel: panel@0 {
+		compatible = "focuslcds,mw405", "ilitek,ili9806e";
+		reg = <0>;
+		reset-gpios = <&port16 5 GPIO_ACTIVE_LOW>;
+		backlight = <&panel_backlight>;
+		vccio-supply = <&reg_1p8v>;
+		vdd-supply = <&reg_3p3v>;
+
+		port {
+			dsipanel_in: endpoint {
+				remote-endpoint = <&dsi_out>;
+			};
+		};
+	};
+};

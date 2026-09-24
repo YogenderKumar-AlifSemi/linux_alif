@@ -401,6 +401,40 @@
 		reset-gpios = <&port15 7 GPIO_ACTIVE_HIGH>;
 	};
 
+	vbat@42000000 {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		reg = <0x42000000 0x008000>;
+		ranges = <>;
+
+		lpgpio: gpio@42002000 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			compatible = "snps,dw-apb-gpio";
+			reg = <0x42002000 0x1000>;
+
+			port16: gpio-port@0 {
+				compatible = "snps,dw-apb-gpio-port";
+				gpio-port;
+				#gpio-cells = <2>;
+				snps,nr-gpios = <8>;
+				reg = <0>;
+				interrupt-controller;
+				#interrupt-cells = <2>;
+				interrupt-parent = <&gic>;
+				interrupts = <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>,
+					     <GIC_SPI 161 IRQ_TYPE_LEVEL_HIGH>,
+					     <GIC_SPI 162 IRQ_TYPE_LEVEL_HIGH>,
+					     <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>,
+					     <GIC_SPI 164 IRQ_TYPE_LEVEL_HIGH>,
+					     <GIC_SPI 165 IRQ_TYPE_LEVEL_HIGH>,
+					     <GIC_SPI 166 IRQ_TYPE_LEVEL_HIGH>,
+					     <GIC_SPI 167 IRQ_TYPE_LEVEL_HIGH>;
+			};
+		};
+	};
+
 	ahb-b@48100000 {
 		compatible = "simple-bus";
 		#address-cells = <1>;
@@ -1596,35 +1630,6 @@
 		reg = <0x49030000 0x00010000>;
 		ranges = <>;
 
-		i3c0: i3c@49034000 {
-			compatible = "snps,dw-i3c-master-1.00a";
-			reg = <0x49034000 0x1000>;
-			#address-cells = <3>;
-			#size-cells = <0>;
-			interrupt-parent = <&gic>;
-			interrupts = <GIC_SPI 125 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&psclks ENSEMBLE_I3C_CLK>;
-			clock-names = "core" ;
-			i2c-scl-hz = <100000>;
-/*			i3c-scl-hz = <2000000>;*/
-			status = "disabled";
-		};
-
-		dphy: dphy@4903f000 {
-			#phy-cells = <1>;
-			compatible = "alif,dphy", "snps,dphy";
-			reg = <0x4903f000 0xb0>, <0x1a609008 0x4>;
-			reg-names = "soc_regs", "vbat";
-			alif,csi-base = <0x49033000>;
-			alif,dsi-base = <0x49032000>;
-			clocks = <&psclks ENSEMBLE_MIPI_RXDPHY_CLK>,
-				 <&psclks ENSEMBLE_MIPI_TXDPHY_CLK>,
-				 <&psclks ENSEMBLE_MIPI_PLLREF_CLK>;
-			clock-names = "rx_clk", "tx_clk", "pll_ref_clk";
-			cfg-clk-frequency = <25000000>;
-			status = "disabled";
-		};
-
 		cpi: camera-controller@49030000 {
 			compatible = "alif,ensemble-cpi2";
 			reg = <0x49030000 0x1000>;
@@ -1634,27 +1639,6 @@
 			clock-names = "apb_clk", "pix_clk";
 			memory-region = <&cpi_buf>;
 			status = "disabled";
-		};
-
-		csi: csi-controller@49033000 {
-			compatible = "alif,ensemble-mipi-csi2", "snps,dw-mipi-csi2-v150";
-			reg = <0x49033000 0x1000>;
-			reg-names = "core";
-			phys = <&dphy 1>;
-			phy-names = "rx";
-			interrupt-parent = <&gic>;
-			interrupts = <GIC_SPI 333 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&psclks ENSEMBLE_CSI_APB>,
-				 <&psclks ENSEMBLE_CSI_PIXCLK>;
-			clock-names = "per", "pixel";
-			status = "disabled";
-		};
-		/* ALIF Event Router */
-		event_router: dma-router@49035000 {
-			compatible = "alif,event-router";
-			reg = <0x49035000 0x1000>;
-			#dma-cells = <2>; /* channel, source */
-			dma-masters = <&dmac_bus_ns>;
 		};
 
 		cdc200: cdc200@49031000 {
@@ -1671,7 +1655,77 @@
 					  "reload";
 			clocks = <&psclks ENSEMBLE_CDC200_APB>, <&psclks ENSEMBLE_CDC200_PIXCLK>;
 			clock-names = "apb_pclk", "pix_clk";
+			status = "disabled";
+		};
 
+		dsi: dsi@49032000 {
+			compatible = "alif,ensemble-dsi", "snps,dw-mipi-dsi";
+			reg = <0x49032000 0x1000>;
+			reg-names = "dsi";
+			interrupts = <GIC_SPI 332 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&psclks ENSEMBLE_DSI_APB>,
+				 <&psclks ENSEMBLE_MIPI_TXDPHY_CLK>,
+				 <&psclks ENSEMBLE_MIPI_PLLREF_CLK>,
+				 <&psclks ENSEMBLE_MIPI_BYPASS_CLK>;
+			clock-names = "pclk", "tx_clk", "pll_ref_clk",
+				      "pll_bypass_clk";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			#phy-cells = <0>;
+			alif,dphy = <&dphy>;
+			alif,csi-base = <0x49033000>;
+			cfg-clk-frequency = <25000000>;
+			status = "disabled";
+		};
+
+		csi: csi-controller@49033000 {
+			compatible = "alif,ensemble-mipi-csi2", "snps,dw-mipi-csi2-v150";
+			reg = <0x49033000 0x1000>;
+			reg-names = "core";
+			phys = <&dphy 1>;
+			phy-names = "rx";
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 333 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&psclks ENSEMBLE_CSI_APB>,
+				 <&psclks ENSEMBLE_CSI_PIXCLK>;
+			clock-names = "per", "pixel";
+			status = "disabled";
+		};
+
+		i3c0: i3c@49034000 {
+			compatible = "snps,dw-i3c-master-1.00a";
+			reg = <0x49034000 0x1000>;
+			#address-cells = <3>;
+			#size-cells = <0>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 125 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&psclks ENSEMBLE_I3C_CLK>;
+			clock-names = "core" ;
+			i2c-scl-hz = <100000>;
+/*			i3c-scl-hz = <2000000>;*/
+			status = "disabled";
+		};
+
+		/* ALIF Event Router */
+		event_router: dma-router@49035000 {
+			compatible = "alif,event-router";
+			reg = <0x49035000 0x1000>;
+			#dma-cells = <2>; /* channel, source */
+			dma-masters = <&dmac_bus_ns>;
+		};
+
+		dphy: dphy@4903f000 {
+			compatible = "alif,dphy", "snps,dphy";
+			reg = <0x4903f000 0xb0>, <0x1a609008 0x4>;
+			reg-names = "soc_regs", "vbat";
+			clocks = <&psclks ENSEMBLE_MIPI_RXDPHY_CLK>,
+				 <&psclks ENSEMBLE_MIPI_TXDPHY_CLK>,
+				 <&psclks ENSEMBLE_MIPI_PLLREF_CLK>;
+			clock-names = "rx_clk", "tx_clk", "pll_ref_clk";
+			#phy-cells = <1>;
+			alif,csi-base = <0x49033000>;
+			alif,dsi-base = <0x49032000>;
+			cfg-clk-frequency = <25000000>;
 			status = "disabled";
 		};
 	};
