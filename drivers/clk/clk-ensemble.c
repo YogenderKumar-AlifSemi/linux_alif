@@ -416,7 +416,7 @@ static void __init ensemble_clocks_init(struct device_node *ccps_node)
 		ensemble_clk_hw_gate("cdc200_apb", "syst_pclk", ccpmst_base + 0xC, 1);
 
 	hws[ENSEMBLE_MIPI_BYPASS_CLK] = ensemble_clk_hw_gate("mipi_bypass_clk",
-							     "hfosc_clk", ccpmst_base + 0x40, 12);
+							     "pll_clk1", ccpmst_base + 0x40, 12);
 	hws[ENSEMBLE_MIPI_PLLREF_CLK] = ensemble_clk_hw_gate("mipi_pllref_clk",
 							     "hfosc_clk", ccpmst_base + 0x40, 8);
 	hws[ENSEMBLE_MIPI_RXDPHY_CLK] = ensemble_clk_hw_gate("mipi_rxdphy_clk",
