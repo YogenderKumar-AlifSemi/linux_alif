@@ -7487,6 +7487,12 @@ F:	Documentation/devicetree/bindings/display/tes,dswz.yaml
 F:	drivers/gpu/drm/tes/
 F:	drivers/gpu/drm/tes/cdc_*
 
+DRM DRIVER FOR TES D/AVE-2D
+M:	Yogender Kumar Arya <yogender.kumar@alifsemi.com>
+L:	dri-devel@lists.freedesktop.org
+S:	Maintained
+F:	Documentation/devicetree/bindings/display/tes,d2d-1.0.yaml
+
 DRM DRIVER FOR TI DLPC3433 MIPI DSI TO DMD BRIDGE
 M:	Jagan Teki <jagan@amarulasolutions.com>
 S:	Maintained
