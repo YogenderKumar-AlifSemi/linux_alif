@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/tes,d2d-1.0.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: TES Electronic Solutions D/AVE-2D 2D GPU
+
+maintainers:
+  - Yogender Kumar Arya <yogender.kumar@alifsemi.com>
+
+description:
+  The TES D/AVE-2D is a 2D graphics accelerator used on Alif Ensemble SoCs.
+  The Linux driver is a render-only DRM device that exposes GEM buffers and
+  register access to userspace.
+
+properties:
+  compatible:
+    const: tes,d2d-1.0
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    gpu@49040000 {
+        compatible = "tes,d2d-1.0";
+        reg = <0x49040000 0x1000>;
+        interrupts = <GIC_SPI 321 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&psclks 0>;
+    };
