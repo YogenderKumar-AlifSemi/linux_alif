@@ -310,17 +310,10 @@ static void cdc_crtc_atomic_flush(struct drm_crtc *crtc,
 		cdc_hw_trigger_shadow_reload(cdc, false);
 	}
 
-	/*
-	 * The atomic helper requires the driver to consume crtc->state->event
-	 * before drm_atomic_helper_commit_hw_done(). Arm it for the next
-	 * vblank when scanout is running; otherwise send it immediately.
-	 */
+	/* Shadow reload has already waited for the latch vblank. */
 	if (crtc->state->event) {
 		spin_lock_irqsave(&dev->event_lock, flags);
-		if (cdc->hw.enabled && drm_crtc_vblank_get(crtc) == 0)
-			drm_crtc_arm_vblank_event(crtc, crtc->state->event);
-		else
-			drm_crtc_send_vblank_event(crtc, crtc->state->event);
+		drm_crtc_send_vblank_event(crtc, crtc->state->event);
 		spin_unlock_irqrestore(&dev->event_lock, flags);
 		crtc->state->event = NULL;
 	}
