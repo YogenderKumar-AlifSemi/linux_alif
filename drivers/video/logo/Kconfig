@@ -30,6 +30,19 @@ config LOGO_LINUX_CLUT224
 	bool "Standard 224-color Linux logo"
 	default y
 
+config LOGO_ALIF_CLUT224
+	bool "224-color Alif Semiconductor Linux logo"
+	depends on ARCH_ENSEMBLE
+	default y
+	help
+	  Include the 224-color Alif Semiconductor logo and show it on the
+	  framebuffer console during boot on Ensemble platforms.  When this
+	  option is enabled, fb_find_logo() prefers this image over the
+	  generic 224-color Linux penguin.
+
+	  Say Y if you are building a kernel for Alif Ensemble.  Say N to
+	  keep the standard Linux logo instead.
+
 config LOGO_DEC_CLUT224
 	bool "224-color Digital Equipment Corporation Linux logo"
 	depends on MACH_DECSTATION || ALPHA
