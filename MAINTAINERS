@@ -812,6 +812,11 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/media/alif,ensemble-cpi.yaml
 F:	drivers/media/platform/alif/
 
+ALIF ENSEMBLE LINUX LOGO
+M:	Yogender Kumar Arya <yogender.kumar@alifsemi.com>
+S:	Maintained
+F:	drivers/video/logo/logo_alif*
+
 ALLWINNER A10 CSI DRIVER
 M:	Maxime Ripard <mripard@kernel.org>
 L:	linux-media@vger.kernel.org
