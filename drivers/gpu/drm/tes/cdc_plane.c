@@ -13,6 +13,7 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fourcc.h>
@@ -25,6 +26,9 @@
 #include "cdc_kms.h"
 #include "cdc_plane.h"
 #include "cdc_hw_helpers.h"
+
+/* Constant alpha is 8-bit. This is fully opaque. */
+#define CDC_ALPHA_OPAQUE 255
 
 static struct cdc_plane *to_cdc_plane(struct drm_plane *p)
 {
@@ -194,49 +198,46 @@ static int cdc_plane_atomic_get_property(struct drm_plane *plane,
 	return 0;
 }
 
+static void cdc_plane_atomic_destroy_state(struct drm_plane *plane,
+					   struct drm_plane_state *state);
+
 static void cdc_plane_reset(struct drm_plane *plane)
 {
 	struct cdc_plane_state *state;
 
-	if (plane->state && plane->state->fb)
-		drm_framebuffer_put(plane->state->fb);
-
-	kfree(plane->state);
+	if (plane->state)
+		cdc_plane_atomic_destroy_state(plane, plane->state);
 	plane->state = NULL;
 
 	state = kzalloc(sizeof(*state), GFP_KERNEL);
 	if (!state)
 		return;
 
-	state->alpha = 255;
-
-	plane->state = &state->state;
-	plane->state->plane = plane;
+	__drm_atomic_helper_plane_reset(plane, &state->state);
+	state->alpha = CDC_ALPHA_OPAQUE;
 }
 
 static struct drm_plane_state *
-	cdc_plane_atomic_duplicate_state(struct drm_plane *plane)
+cdc_plane_atomic_duplicate_state(struct drm_plane *plane)
 {
-	struct cdc_plane_state *state;
 	struct cdc_plane_state *copy;
 
-	state = to_cdc_plane_state(plane->state);
-	copy = kmemdup(state, sizeof(*state), GFP_KERNEL);
+	if (WARN_ON(!plane->state))
+		return NULL;
+
+	copy = kzalloc(sizeof(*copy), GFP_KERNEL);
 	if (!copy)
 		return NULL;
 
-	if (copy->state.fb)
-		drm_framebuffer_get(copy->state.fb);
-
+	__drm_atomic_helper_plane_duplicate_state(plane, &copy->state);
+	copy->alpha = to_cdc_plane_state(plane->state)->alpha;
 	return &copy->state;
 }
 
 static void cdc_plane_atomic_destroy_state(struct drm_plane *plane,
 					   struct drm_plane_state *state)
 {
-	if (state->fb)
-		drm_framebuffer_put(state->fb);
-
+	__drm_atomic_helper_plane_destroy_state(state);
 	kfree(to_cdc_plane_state(state));
 }
 
@@ -270,7 +271,8 @@ int cdc_planes_init(struct cdc_device *cdc)
 	int ret;
 	int i;
 
-	cdc->alpha = drm_property_create_range(cdc->ddev, 0, "alpha", 0, 255);
+	cdc->alpha = drm_property_create_range(cdc->ddev, 0, "alpha", 0,
+					       CDC_ALPHA_OPAQUE);
 	if (!cdc->alpha)
 		return -ENOMEM;
 
@@ -299,7 +301,8 @@ int cdc_planes_init(struct cdc_device *cdc)
 			continue;
 
 		dev_dbg(cdc->dev, "Adding alpha property to plane %d...\n", i);
-		drm_object_attach_property(&plane->plane.base, cdc->alpha, 255);
+		drm_object_attach_property(&plane->plane.base, cdc->alpha,
+					   CDC_ALPHA_OPAQUE);
 	}
 
 	return 0;
