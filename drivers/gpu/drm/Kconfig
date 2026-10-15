@@ -474,6 +474,8 @@ source "drivers/gpu/drm/tes/Kconfig"
 
 source "drivers/gpu/drm/alif/Kconfig"
 
+source "drivers/gpu/drm/d2d/Kconfig"
+
 config DRM_HYPERV
 	tristate "DRM Support for Hyper-V synthetic video device"
 	depends on DRM && PCI && MMU && HYPERV
