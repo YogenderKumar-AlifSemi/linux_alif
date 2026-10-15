@@ -7,6 +7,12 @@
 #include "../common/ensemble-ex.dtsi"
 #include "../common/devkit_ex_dct_defines.h"
 #include <dt-bindings/media/video-interfaces.h>
+#if CDC200_PARALLEL
+#include "../common/parallel_panel.dtsi"
+#else
+#include "../common/serial_panel.dtsi"
+#endif
+
 
 / {
 	model = "devkit-e8";
@@ -100,6 +106,10 @@
 
 &utimer {
 	status = UTIMER0_STATUS;
+};
+
+&gpu2d {
+	status = DAVE_2D_STATUS;
 };
 
 &hsusb {
@@ -607,34 +617,34 @@
 
 	pinctrl_cdc200_0: cdc200_0grp {
 		pinmux = <
-			PIN_P5_3__CDC_DE_A	0x23
-			PIN_P5_4__CDC_PCLK_A	0x23
+			PIN_P5_3__CDC_PCLK_A	0x23
+			PIN_P5_4__CDC_DE_A	0x23
 			PIN_P4_1__CDC_HSYNC_B	0x23
+			PIN_P4_0__CDC_VSYNC_B	0x23
+			PIN_P11_0__CDC_D0_B	0x23
+			PIN_P8_1__CDC_D1_A	0x23
 			PIN_P8_2__CDC_D2_A	0x23
 			PIN_P8_3__CDC_D3_A	0x23
 			PIN_P8_4__CDC_D4_A	0x23
-			PIN_P8_5__CDC_D5_A	0x23
+			PIN_P11_5__CDC_D5_B	0x23
+			PIN_P11_6__CDC_D6_B	0x23
+			PIN_P11_7__CDC_D7_B	0x23
+			PIN_P9_0__CDC_D8_A	0x23
+			PIN_P9_1__CDC_D9_A	0x23
 			PIN_P9_2__CDC_D10_A	0x23
 			PIN_P9_3__CDC_D11_A	0x23
 			PIN_P9_4__CDC_D12_A	0x23
-			PIN_P9_5__CDC_D13_A	0x23
+			PIN_P12_5__CDC_D13_B	0x23
+			PIN_P12_6__CDC_D14_B	0x23
+			PIN_P12_7__CDC_D15_B	0x23
+			PIN_P13_0__CDC_D16_B	0x23
+			PIN_P13_1__CDC_D17_B	0x23
 			PIN_P13_2__CDC_D18_B	0x23
 			PIN_P13_3__CDC_D19_B	0x23
 			PIN_P13_4__CDC_D20_B	0x23
 			PIN_P13_5__CDC_D21_B	0x23
-			PIN_P13_7__CDC_D23_B	0x23
 			PIN_P13_6__CDC_D22_B	0x23
-			PIN_P13_1__CDC_D17_B	0x23
-			PIN_P13_0__CDC_D16_B	0x23
-			PIN_P9_7__CDC_D15_A	0x23
-			PIN_P9_6__CDC_D14_A	0x23
-			PIN_P9_1__CDC_D9_A	0x23
-			PIN_P9_0__CDC_D8_A	0x23
-			PIN_P8_7__CDC_D7_A	0x23
-			PIN_P8_6__CDC_D6_A	0x23
-			PIN_P8_1__CDC_D1_A	0x23
-			PIN_P8_0__CDC_D0_A	0x23
-			PIN_P5_6__CDC_VSYNC_A	0x23
+			PIN_P13_7__CDC_D23_B	0x23
 		>;
 	};
 
