@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 Alif Semiconductor - All Rights Reserved.
+# Use, distribution and modification of this code is permitted under the
+# terms stated in the Alif Semiconductor Software License Agreement
+#
+# You should have received a copy of the Alif Semiconductor Software
+# License Agreement with this file. If not, please write to:
+# contact@alifsemi.com, or visit: https://alifsemi.com/license
+config DRM_D2D
+	tristate "DRM Support for TES D/AVE-2D for Alif Ensemble SoC."
+	depends on DRM && OF
+	depends on ARM
+	depends on ARCH_ENSEMBLE || COMPILE_TEST
+	select DRM_GEM_DMA_HELPER
+	help
+	  Render-only DRM driver for the TES D/AVE-2D 2D GPU on Alif
+	  Ensemble SoCs. Provides GEM DMA buffer objects and register
+	  access ioctls for userspace 2D acceleration.
+
+	  If M is selected the module will be called alif_drm.
