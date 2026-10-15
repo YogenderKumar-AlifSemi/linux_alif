@@ -102,6 +102,10 @@
 	status = UTIMER0_STATUS;
 };
 
+&gpu2d {
+	status = DAVE_2D_STATUS;
+};
+
 &hsusb {
 	status = HSUSB_STATUS;
 	dwc3: usb@48200000 {
