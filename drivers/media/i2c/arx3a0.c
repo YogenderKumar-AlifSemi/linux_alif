@@ -397,6 +397,7 @@ static const struct initial_reg initial_regs_raw8[] = {
 	REGS(be(0x3120), be(0x0001)),
 	REGS(be(ARX3A0_REG_PEDESTAL), be(ARX3A0_PEDESTAL_10BIT)),
 
+	/* LOAD= PLL_360Fps_80MHz_80MHz_20MHz */
 	REGS(be(0x0300), be(0x000A)),
 	REGS(be(0x0302), be(0x0001)),
 	REGS(be(0x0304), be(0x0101)),
@@ -417,20 +418,20 @@ static const struct initial_reg initial_regs_raw8[] = {
 	REGS(be(0x034C), be(0x0230)),
 	REGS(be(0x034E), be(0x0230)),
 
-	REGS(be(0x3012), be(0x366A)),
-	REGS(be(0x0112), be(0x0808)),
+	REGS(be(0x3012), be(0x0304)),
+	REGS(be(0x0112), be(0x0808)), /* RAW8 */
 
-	REGS(be(0x0300), be(0x000A)),
+	REGS(be(0x0300), be(0x000C)),
 	REGS(be(0x0302), be(0x0001)),
 	REGS(be(0x0304), be(0x0101)),
-	REGS(be(0x0306), be(0x2828)),
-	REGS(be(0x0308), be(0x000A)),
+	REGS(be(0x0306), be(0x2030)),
+	REGS(be(0x0308), be(0x0008)),
 	REGS(be(0x030A), be(0x0001)),
-	REGS(be(0x0340), be(0xA47B),
-	     be(0x02F8),		/* line_length_pck */
+	REGS(be(0x0340), be(0xA78E),
+	     be(0x02EA),		/* line_length_pck */
 		be(0x0004),		/* X_ADDR_START */
 		be(0x0004),		/* Y_ADDR_START */
-		be(0x0233),		/* X_ADDR_END */
+		be(0x0234),		/* X_ADDR_END */
 		be(0x0233),		/* Y_ADDR_END */
 		be(0x0230),		/* X_OUTPUT_SIZE */
 		be(0x0230)),		/* Y_OUTPUT_SIZE */
@@ -445,8 +446,8 @@ static const struct initial_reg initial_regs_raw8[] = {
 	REGS(be(0x3004), be(0x0004)),
 	REGS(be(0x3006), be(0x0233)),
 	REGS(be(0x3008), be(0x0234)),
-	REGS(be(0x300A), be(0xA47B)),
-	REGS(be(0x300C), be(0x02F8)),
+	REGS(be(0x300A), be(0xA78E)),
+	REGS(be(0x300C), be(0x02EA)),
 
 	REGS(be(0x3012), be(0x0304)),
 	REGS(be(0x3018), be(0x0000)),
@@ -741,7 +742,7 @@ static u32 calc_pll(struct arx3a0_dev *sensor, u32 freq, u16 *pre_ptr,
 }
 
 #define DIV 4
-static void __maybe_unused arx3a0_calc_mode(struct arx3a0_dev *sensor)
+static void arx3a0_calc_mode(struct arx3a0_dev *sensor)
 {
 	unsigned int speed_mod = 4 / sensor->lane_count; /* 1 with 4 DDR lanes */
 	u16 total_width = max(sensor->fmt.width + ARX3A0_WIDTH_BLANKING_MIN,
@@ -858,6 +859,7 @@ static int arx3a0_set_fmt(struct v4l2_subdev *sd,
 			sensor->fmt = format->format;
 			ret = arx3a0_set_initial_regs(sensor);
 		}
+		arx3a0_calc_mode(sensor);
 	}
 
 	mutex_unlock(&sensor->lock);
