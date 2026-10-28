@@ -62,7 +62,8 @@
 	chosen {
 		bootargs = "console=ttyS0,115200n8 \
 		root=mtd:physmap-flash.0 \
-		rootfstype=cramfs ro loglevel=9";
+		rootfstype=cramfs ro loglevel=9 \
+		fbcon=logo-count:1";
 	};
 
 	sound {
