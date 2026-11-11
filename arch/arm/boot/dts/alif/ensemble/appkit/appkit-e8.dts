@@ -176,6 +176,20 @@
 		reset-gpios = <&port7 4 GPIO_ACTIVE_LOW>;
 		intr-gpios = <&port7 3 GPIO_ACTIVE_HIGH>;
 	};
+
+	goodix_ts@5d {
+		compatible = "goodix,gt911";
+		reg = <0x5d>;
+		AVDD28-supply = <&reg_3p3v>;
+		VDDIO-supply = <&reg_1p8v>;
+		interrupt-parent = <&port10>;
+		interrupts = <4 IRQ_TYPE_EDGE_FALLING>;
+		irq-gpios = <&port10 4 0>;
+		reset-gpios = <&port7 5 GPIO_ACTIVE_LOW>;
+		touchscreen-size-x = <480>;
+		touchscreen-size-y = <800>;
+		status = "okay";
+	};
 };
 
 &i2s2 {
