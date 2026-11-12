@@ -16,6 +16,7 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
+#include <linux/property.h>
 #include <linux/videodev2.h>
 #include <media/media-entity.h>
 #include <media/v4l2-common.h>
@@ -164,6 +165,30 @@ static const struct plat_csi_fmt *cpi_find_mbus_code(u32 mbus_code)
 			return fmt;
 	}
 	return NULL;
+}
+
+/*
+ * CPI ISP port is 12-bit. CSI RAW8/RAW10 are presented as 12-bit Bayer of the
+ * same pattern (low bits zero). AXI capture keeps the CSI depth.
+ */
+static u32 cpi_isp_port_code(u32 sink_code)
+{
+	switch (sink_code) {
+	case MEDIA_BUS_FMT_SBGGR8_1X8:
+	case MEDIA_BUS_FMT_SBGGR10_1X10:
+		return MEDIA_BUS_FMT_SBGGR12_1X12;
+	case MEDIA_BUS_FMT_SGBRG8_1X8:
+	case MEDIA_BUS_FMT_SGBRG10_1X10:
+		return MEDIA_BUS_FMT_SGBRG12_1X12;
+	case MEDIA_BUS_FMT_SGRBG8_1X8:
+	case MEDIA_BUS_FMT_SGRBG10_1X10:
+		return MEDIA_BUS_FMT_SGRBG12_1X12;
+	case MEDIA_BUS_FMT_SRGGB8_1X8:
+	case MEDIA_BUS_FMT_SRGGB10_1X10:
+		return MEDIA_BUS_FMT_SRGGB12_1X12;
+	default:
+		return sink_code;
+	}
 }
 
 static int
@@ -483,14 +508,23 @@ static int cpi_hw_recover(struct cpi_dev *cpi)
 
 static void cpi_hw_start_video_capture(struct cpi_dev *cpi)
 {
+	u32 val;
+
 	cpi_hw_reset(cpi);
 
 	if (cpi->active)
 		writel(cpi->active->dma_addr, cpi->base_addr + CPI_FRAME_ADDR);
 
-	writel(CTRL_START |
-		CTRL_SNAPSHOT |
-		CTRL_FIFO_CLK_SEL, cpi->base_addr + CPI_CTRL);
+	/*
+	 * SNAPSHOT captures one frame and stops. Restart from the stop
+	 * interrupt while streaming. Stream-off must let the current snapshot
+	 * finish: clearing START during the VSYNC wait leaves BUSY set.
+	 */
+	val = CTRL_START | CTRL_FIFO_CLK_SEL;
+	if (cpi->active ||
+	    (cpi->enabled_pad_mask & BIT_ULL(CPI_PAD_SOURCE_ISP)))
+		val |= CTRL_SNAPSHOT;
+	writel(val, cpi->base_addr + CPI_CTRL);
 }
 
 static inline int cpi_hw_status(struct cpi_dev *cpi)
@@ -630,21 +664,33 @@ static int cpi_hw_set_geometry(struct cpi_dev *cpi)
 		break;
 	}
 
+	/*
+	 * The ISP port is 12 bits wide, but CSI unpacking follows the sensor.
+	 * ARX3A0 is RAW10, which is IPI16_RAW10 with data mode 16. Forcing
+	 * data mode 12 makes CPI consume 12-bit samples from a 10-bit stream,
+	 * so the line never matches the ISP window.
+	 */
 	if (is_mipi) {
-		val = CFG_MIPI_CSI | CFG_WAIT_VSYNC | CFG_AXI_PORT_EN;
+		val = CFG_MIPI_CSI | CFG_WAIT_VSYNC;
 		val |= ((data_mode & CFG_DATA_MODE_MASK) << CFG_DATA_MODE_MASK_SHIFT) |
 			((data_mask & CFG_DATA_MASK) << CFG_DATA_MASK_SHIFT);
 		if (cpi->version == CPI_VERSION_2) {
-			val = (cpi->axi_bus_ep) ? (CFG_AXI_PORT_EN | val) : val;
-			val = (cpi->is_isp_connected) ? (CFG_ISP_PORT_EN | val) : val;
+			if (cpi->axi_bus_ep)
+				val |= CFG_AXI_PORT_EN;
+			if (cpi->is_isp_connected)
+				val |= CFG_ISP_PORT_EN;
+		} else {
+			val |= CFG_AXI_PORT_EN;
 		}
 		writel(val, cpi->base_addr + CPI_CFG);
 
 		val = cpi_color_mode_from_bus(data_mode, data_mask);
-		for (i = 0; i < ARRAY_SIZE(mappings); i++) {
-			if (v4l2_fmt->fmt.pix.pixelformat == mappings[i].fourcc) {
-				val = mappings[i].col_mode;
-				break;
+		if (!cpi->is_isp_connected || cpi->axi_bus_ep) {
+			for (i = 0; i < ARRAY_SIZE(mappings); i++) {
+				if (v4l2_fmt->fmt.pix.pixelformat == mappings[i].fourcc) {
+					val = mappings[i].col_mode;
+					break;
+				}
 			}
 		}
 
@@ -932,6 +978,18 @@ static void cpi_vb2_stop_streaming(struct vb2_queue *q)
 
 	spin_lock_irq(&cpi->slock);
 	cpi_return_all_buffers_locked(cpi, VB2_BUF_STATE_ERROR);
+	/*
+	 * This stop is the AXI queue. The ISP pad has no vb2 buffers, so
+	 * leave its snapshot running when that pad is still enabled.
+	 */
+	if (cpi->enabled_pad_mask & BIT_ULL(CPI_PAD_SOURCE_ISP)) {
+		cpi->stopping = false;
+		cpi_hw_enable_interrupts(cpi, INTR_VSYNC |
+					 INTR_BRESP_ERR |
+					 INTR_OUTFIFO_OVERRUN |
+					 INTR_STOP);
+		cpi_hw_start_video_capture(cpi);
+	}
 	spin_unlock_irq(&cpi->slock);
 
 	cpi_free_bounce(cpi);
@@ -984,6 +1042,8 @@ static int cpi_subdev_init_state(struct v4l2_subdev *subdev,
 		fmt->width = 1920;
 		fmt->height = 1080;
 		fmt->code = MEDIA_BUS_FMT_SBGGR10_1X10;
+		if (i == CPI_PAD_SOURCE_ISP)
+			fmt->code = cpi_isp_port_code(fmt->code);
 		fmt->field = V4L2_FIELD_NONE;
 		fmt->colorspace = V4L2_COLORSPACE_SRGB;
 		fmt->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
@@ -1125,6 +1185,8 @@ static int cpi_get_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_state *state,
 		fmt->format.ycbcr_enc = cpi->format.fmt.pix.ycbcr_enc;
 		fmt->format.quantization = cpi->format.fmt.pix.quantization;
 		fmt->format.xfer_func = cpi->format.fmt.pix.xfer_func;
+		if (fmt->pad == CPI_PAD_SOURCE_ISP)
+			fmt->format.code = cpi_isp_port_code(fmt->format.code);
 	}
 
 	return 0;
@@ -1228,8 +1290,12 @@ static int cpi_set_fmt(struct v4l2_subdev *sd,
 			if (fmt->pad == CPI_PAD_SINK) {
 				for (i = 1; i < CPI_PADS_NUM; i++) {
 					src_fmt = v4l2_subdev_state_get_format(sd_state, i);
-					if (src_fmt)
-						*src_fmt = fmt->format;
+					if (!src_fmt)
+						continue;
+					*src_fmt = fmt->format;
+					if (i == CPI_PAD_SOURCE_ISP)
+						src_fmt->code =
+							cpi_isp_port_code(src_fmt->code);
 				}
 			}
 		}
@@ -1267,6 +1333,8 @@ static int cpi_set_fmt(struct v4l2_subdev *sd,
 		fmt->format.width = cpi->format.fmt.pix.width;
 		fmt->format.height = cpi->format.fmt.pix.height;
 		fmt->format.code = cpi->fmt->mbus_code;
+		if (fmt->pad == CPI_PAD_SOURCE_ISP)
+			fmt->format.code = cpi_isp_port_code(fmt->format.code);
 		fmt->format.field = cpi->format.fmt.pix.field;
 		fmt->format.colorspace = cpi->format.fmt.pix.colorspace;
 		fmt->format.ycbcr_enc = cpi->format.fmt.pix.ycbcr_enc;
@@ -1312,8 +1380,11 @@ static int cpi_set_fmt(struct v4l2_subdev *sd,
 		struct v4l2_mbus_framefmt *src_fmt;
 
 		src_fmt = v4l2_subdev_state_get_format(sd_state, i);
-		if (src_fmt)
-			*src_fmt = fmt->format;
+		if (!src_fmt)
+			continue;
+		*src_fmt = fmt->format;
+		if (i == CPI_PAD_SOURCE_ISP)
+			src_fmt->code = cpi_isp_port_code(src_fmt->code);
 	}
 
 	if (cpi->num_sensors == 0) {
@@ -1400,11 +1471,16 @@ static void cpi_hw_enable(struct cpi_dev *cpi)
 {
 	spin_lock_irq(&cpi->slock);
 
+	cpi->streaming = true;
 	cpi_hw_start_video_capture(cpi);
 	spin_unlock_irq(&cpi->slock);
 
-	dev_dbg(&cpi->pdev->dev, "cpi: Start capture | Video mode!! 0x%x\n",
-		readl(cpi->base_addr + CPI_CTRL));
+	dev_dbg(&cpi->pdev->dev,
+		"CPI start CTRL=%08x CFG=%08x CMCFG=%08x FCFG=%08x\n",
+		readl(cpi->base_addr + CPI_CTRL),
+		readl(cpi->base_addr + CPI_CFG),
+		readl(cpi->base_addr + CPI_CSI_CMCFG),
+		readl(cpi->base_addr + CPI_VIDEO_FCFG));
 }
 
 static void cpi_hw_disable(struct cpi_dev *cpi)
@@ -1413,21 +1489,33 @@ static void cpi_hw_disable(struct cpi_dev *cpi)
 
 	spin_lock_irq(&cpi->slock);
 
+	/* Prevent the snapshot STOP interrupt from starting another frame. */
+	cpi->streaming = false;
+	cpi_return_all_buffers_locked(cpi, VB2_BUF_STATE_ERROR);
+
 	cpi_hw_disable_interrupts(cpi, INTR_VSYNC |
 				INTR_BRESP_ERR |
 				INTR_OUTFIFO_OVERRUN |
 				INTR_STOP);
-
-	cpi_hw_reset(cpi);
 	cpi_hw_clear_interrupts(cpi);
 
 	spin_unlock_irq(&cpi->slock);
 
+	/*
+	 * A snapshot clears BUSY by itself at the next frame end. Clearing
+	 * START while it is waiting for VSYNC never reaches that point, so
+	 * do not reset until the wait fails. The recovery helper is the
+	 * stuck-BUSY path.
+	 */
 	ret = cpi_hw_wait_idle(cpi);
-	if (ret && cpi_hw_recover(cpi)) {
+	if (!ret) {
+		writel(0, cpi->base_addr + CPI_CTRL);
+		return;
+	}
+
+	if (cpi_hw_recover(cpi))
 		dev_err(&cpi->pdev->dev,
 			"Failed to stop the Camera controller.\n");
-	}
 }
 
 static int cpi_enable_streams(struct v4l2_subdev *sd,
@@ -1450,14 +1538,30 @@ static int cpi_enable_streams(struct v4l2_subdev *sd,
 
 		sink_streams = v4l2_subdev_state_xlate_streams(state,
 							       pad, CPI_PAD_SINK, &streams_mask);
+		if (!sink_streams) {
+			dev_err(&cpi->pdev->dev, "no sink stream for pad %u\n", pad);
+			return -EPIPE;
+		}
+
+		/*
+		 * CAM_CFG WAIT_VSYNC (reset 1) keeps CAM_CTRL BUSY until a
+		 * rising VSYNC, and stop waits for that frame to finish.
+		 * Arm the controller before the sensor streams, so the first
+		 * VSYNC is the one capture is waiting for.
+		 *
+		 * Publish the enabled ISP pad before arming snapshot mode so
+		 * its first stop interrupt can restart the next frame.
+		 */
+		cpi->enabled_pad_mask |= BIT_ULL(pad);
+		cpi_hw_enable(cpi);
 
 		ret = v4l2_subdev_enable_streams(cpi->remote_sd,
 						 cpi->remote_pad, sink_streams);
-		if (ret)
+		if (ret) {
+			cpi->enabled_pad_mask &= ~BIT_ULL(pad);
+			cpi_hw_disable(cpi);
 			return ret;
-
-		/* Enable CPI after upstream CSI/sensor streaming is active */
-		cpi_hw_enable(cpi);
+		}
 	} else {
 		if (pad == CPI_PAD_SOURCE && cpi->axi_bus_ep) {
 			spin_lock_irq(&cpi->slock);
@@ -1497,14 +1601,21 @@ static int cpi_disable_streams(struct v4l2_subdev *sd,
 	if (!(cpi->enabled_pad_mask & BIT_ULL(pad)))
 		return 0;
 
+	/*
+	 * Leave the output port enabled until the current frame finishes.
+	 * Clearing ISP_PORT_EN first stalls the controller with BUSY set.
+	 */
+	cpi->enabled_pad_mask &= (~BIT_ULL(pad));
+
+	if (!cpi->enabled_pad_mask)
+		cpi_hw_disable(cpi);
+
 	if (cpi->version == CPI_VERSION_2) {
 		if (pad == CPI_PAD_SOURCE)
 			cpi_disable_axi_port(cpi);
 		else if (pad == CPI_PAD_SOURCE_ISP)
 			cpi_disable_isp_port(cpi);
 	}
-
-	cpi->enabled_pad_mask &= (~BIT_ULL(pad));
 
 	if (!cpi->enabled_pad_mask) {
 		int ret = 0;
@@ -1518,7 +1629,6 @@ static int cpi_disable_streams(struct v4l2_subdev *sd,
 			ret = -ENOLINK;
 		}
 
-		cpi_hw_disable(cpi);
 		return ret;
 	}
 
@@ -1751,10 +1861,14 @@ static int cpi_create_bridge_subdev(struct cpi_dev *cpi)
 
 	cpi->subdev_pads[CPI_PAD_SINK].flags =
 		MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT;
-	cpi->subdev_pads[CPI_PAD_SOURCE].flags =
-		MEDIA_PAD_FL_SOURCE | MEDIA_PAD_FL_MUST_CONNECT;
-	cpi->subdev_pads[CPI_PAD_SOURCE_ISP].flags =
-		MEDIA_PAD_FL_SOURCE;
+	cpi->subdev_pads[CPI_PAD_SOURCE].flags = MEDIA_PAD_FL_SOURCE;
+	cpi->subdev_pads[CPI_PAD_SOURCE_ISP].flags = MEDIA_PAD_FL_SOURCE;
+	if (cpi->is_isp_connected)
+		cpi->subdev_pads[CPI_PAD_SOURCE_ISP].flags |=
+			MEDIA_PAD_FL_MUST_CONNECT;
+	else
+		cpi->subdev_pads[CPI_PAD_SOURCE].flags |=
+			MEDIA_PAD_FL_MUST_CONNECT;
 	ret = media_entity_pads_init(&sd->entity, CPI_PADS_NUM,
 				     cpi->subdev_pads);
 	if (ret)
@@ -1847,6 +1961,9 @@ static inline void cpi_change_buffer(struct cpi_dev *cpi)
 
 	if (cpi->stopping || list_empty(&cpi->fb_list_head)) {
 		cpi->active = NULL;
+		if (!cpi->stopping && cpi->streaming &&
+		    (cpi->enabled_pad_mask & BIT_ULL(CPI_PAD_SOURCE_ISP)))
+			cpi_hw_start_video_capture(cpi);
 	} else {
 		cpi->active = list_entry(cpi->fb_list_head.next, struct rx_buffer, list);
 		cpi_hw_setup_buffer(cpi);
@@ -1914,18 +2031,30 @@ static irqreturn_t cpi_isr_thread(int irq, void *dev)
 static int cpi_isp_present(struct cpi_dev *cpi)
 {
 	struct device *dev = &cpi->pdev->dev;
-	struct fwnode_handle *handle;
+	struct fwnode_handle *ep, *remote, *parent;
 
-	handle = fwnode_graph_get_endpoint_by_id(dev_fwnode(dev),
-						 PORT_OUTPUT, 0, 0);
+	cpi->is_isp_connected = false;
 
-	if (!handle) {
-		cpi->is_isp_connected = false;
+	ep = fwnode_graph_get_endpoint_by_id(dev_fwnode(dev),
+					     PORT_OUTPUT, 0, 0);
+	if (!ep)
+		return 0;
+
+	remote = fwnode_graph_get_remote_endpoint(ep);
+	if (!remote) {
+		fwnode_handle_put(ep);
 		return 0;
 	}
+	fwnode_handle_put(remote);
 
-	fwnode_handle_put(handle);
-	cpi->is_isp_connected = true;
+	parent = fwnode_graph_get_remote_port_parent(ep);
+	fwnode_handle_put(ep);
+	if (!parent)
+		return 0;
+
+	/* Disabled ISP node keeps the CPI AXI dump path. */
+	cpi->is_isp_connected = fwnode_device_is_available(parent);
+	fwnode_handle_put(parent);
 
 	return 0;
 }
