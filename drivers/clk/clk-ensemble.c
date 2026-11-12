@@ -409,6 +409,9 @@ static void __init ensemble_clocks_init(struct device_node *ccps_node)
 		ensemble_clk_hw_gate("csi_apb", "syst_pclk", ccpmst_base + 0xC, 24);
 	hws[ENSEMBLE_CPI_APB] =
 		ensemble_clk_hw_gate("cpi_apb", "syst_pclk", ccpmst_base + 0xC, 0);
+	/* CLK_ENA bit 29: ISP clock, parent SYST_ACLK (reset-enabled) */
+	hws[ENSEMBLE_ISP_CLK] =
+		ensemble_clk_hw_gate("isp_clk", "syst_aclk", cgu_base + 0x14, 29);
 
 	hws[ENSEMBLE_DSI_APB] =
 		ensemble_clk_hw_gate("dsi_apb", "syst_pclk", ccpmst_base + 0xC, 28);
