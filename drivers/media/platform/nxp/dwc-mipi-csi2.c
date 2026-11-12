@@ -623,8 +623,13 @@ static void dwc_csi_ipi_disable(struct dwc_csi_device *csidev)
 
 static void dwc_csi_program_ipi_adv_features(struct dwc_csi_device *csidev)
 {
+	/*
+	 * The IPI does not pulse VSYNC on a frame-start packet unless the
+	 * sync-event bit is set. CPI waits on that rising edge.
+	 */
 	u32 val = CSI2RX_IPI_ADV_FEATURES_LINE_EVENT_SEL |
-		  CSI2RX_IPI_ADV_FEATURES_SYNC_VIDEO_PKT;
+		  CSI2RX_IPI_ADV_FEATURES_SYNC_VIDEO_PKT |
+		  CSI2RX_IPI_ADV_FEATURES_SYNC_EVENT_MODE;
 
 	dwc_csi_write(csidev, CSI2RX_IPI_ADV_FEATURES, val);
 }
@@ -1018,6 +1023,13 @@ static int dwc_csi_subdev_set_fmt(struct v4l2_subdev *sd,
 			      DWC_CSI2RX_MAX_PIX_WIDTH, align,
 			      &sdformat->format.height, 1,
 			      DWC_CSI2RX_MAX_PIX_HEIGHT, 0, 0);
+
+	/*
+	 * CSI-2 is progressive. v4l2-ctl leaves field as V4L2_FIELD_ANY
+	 * unless the user passes field=. Link validation treats ANY on the
+	 * sink as a mismatch against a source that reports FIELD_NONE.
+	 */
+	sdformat->format.field = V4L2_FIELD_NONE;
 
 	fmt = v4l2_subdev_state_get_format(sd_state, sdformat->pad,
 					   sdformat->stream);
