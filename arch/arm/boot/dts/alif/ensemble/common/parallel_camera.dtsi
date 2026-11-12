@@ -68,6 +68,33 @@
 		port@1 {
 			reg = <1>;
 			cpi_isp_out: endpoint {
+				remote-endpoint = <&isp_in>;
+				bus-type = <MEDIA_BUS_TYPE_PARALLEL>;
+				bus-width = <12>;
+				hsync-active = <1>;
+				vsync-active = <1>;
+				pclk-sample = <1>;
+			};
+		};
+	};
+};
+
+&isp {
+	status = ISP_STATUS;
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+			isp_in: endpoint {
+				remote-endpoint = <&cpi_isp_out>;
+				bus-type = <MEDIA_BUS_TYPE_PARALLEL>;
+				bus-width = <12>;
+				hsync-active = <1>;
+				vsync-active = <1>;
+				pclk-sample = <1>;
 			};
 		};
 	};

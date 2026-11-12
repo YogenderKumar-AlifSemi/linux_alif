@@ -145,10 +145,22 @@
 			no-map;
 		};
 
-		/* CPI frame buffer pool in on-chip SRAM (4 x 560x560 RAW10 frames) */
+		/* CPI AXI dump pool. CPI cannot master HyperRAM, so this
+		 * stays in SRAM0.
+		 */
 		cpi_buf: cpi-frame-buffer@2000000 {
 			compatible = "shared-dma-pool";
 			reg = <0x02000000 0x300000>; /* 3MB from SRAM */
+			no-map;
+		};
+
+		/* ISP MI pool in HEXSPI0 external memory (0xA0000000, 512MB).
+		 * 16MB at 0xA1000000, beside the Ethos pools at 0xA2000000
+		 * and 0xA3000000. CPI AXI stays in SRAM0.
+		 */
+		isp_buf: isp-frame-buffer@a1000000 {
+			compatible = "shared-dma-pool";
+			reg = <0xa1000000 0x1000000>;
 			no-map;
 		};
 
@@ -1742,6 +1754,19 @@
 			interrupt-parent = <&gic>;
 			interrupts = <GIC_SPI 321 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&psclks ENSEMBLE_GPU_CLK>;
+			status = "disabled";
+		};
+
+		isp: isp@49046000 {
+			compatible = "alif,ensemble-isp-pico";
+			reg = <0x49046000 0x2000>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 356 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 357 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "isp", "mi";
+			clocks = <&psclks ENSEMBLE_ISP_CLK>;
+			clock-names = "isp";
+			memory-region = <&isp_buf>;
 			status = "disabled";
 		};
 

@@ -102,6 +102,9 @@
 /* CPI defines */
 #define CPI_STATUS "disabled"
 
+/* ISP Pico: "okay" switches CPI → ISP (no alif-cam AXI node). "disabled" = AXI dump. */
+#define ISP_STATUS "disabled"
+
 /* ADC defines */
 #define ADC120_STATUS "disabled"
 #define ADC121_STATUS "disabled"
