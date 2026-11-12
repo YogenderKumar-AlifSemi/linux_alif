@@ -184,6 +184,42 @@ static void rkisp1_rsz_update_shadow(struct rkisp1_resizer *rsz,
 	rkisp1_rsz_write(rsz, RKISP1_CIF_RSZ_CTRL, ctrl_cfg);
 }
 
+static u32 rkisp1_pico_rsz_fmt(const struct rkisp1_rsz_yuv_mbus_info *info)
+{
+	if (!info)
+		return RKISP1_PICO_RSZ_FMT_YUV400;
+	if (info->hdiv == 1)
+		return RKISP1_PICO_RSZ_FMT_YUV444;
+	if (info->vdiv == 2)
+		return RKISP1_PICO_RSZ_FMT_YUV420;
+
+	return RKISP1_PICO_RSZ_FMT_YUV422;
+}
+
+/* Format conversion resets to 4:0:0. The ISP outputs 4:2:2. */
+static void rkisp1_pico_rsz_set_format(struct rkisp1_resizer *rsz,
+				       const struct rkisp1_rsz_yuv_mbus_info *sink,
+				       const struct rkisp1_rsz_yuv_mbus_info *src)
+{
+	u32 in_fmt, out_fmt;
+
+	if (!rkisp1_is_pico(rsz->rkisp1) || rsz->id != RKISP1_MAINPATH)
+		return;
+
+	in_fmt = rkisp1_pico_rsz_fmt(sink);
+	out_fmt = rkisp1_pico_rsz_fmt(src);
+	/*
+	 * RGB888 planar leaves the resizer pad at YUV422 and
+	 * selects resizer output code RGB888. The MI writes R, G, and B
+	 * through the three plane addresses.
+	 */
+	if (rsz->rkisp1->capture_devs[RKISP1_MAINPATH].pix.fmt.pixelformat ==
+	    V4L2_PIX_FMT_YUV444M)
+		out_fmt = RKISP1_PICO_RSZ_FMT_RGB888;
+	rkisp1_rsz_write(rsz, RKISP1_PICO_RSZ_FORMAT_CONV,
+			 (out_fmt << RKISP1_PICO_RSZ_OUT_FMT_SHIFT) | in_fmt);
+}
+
 static u32 rkisp1_rsz_calc_ratio(u32 len_sink, u32 len_src)
 {
 	if (len_sink < len_src)
@@ -278,6 +314,7 @@ static void rkisp1_rsz_config(struct rkisp1_resizer *rsz,
 
 	sink_yuv_info = rkisp1_rsz_get_yuv_mbus_info(sink_fmt->code);
 	src_yuv_info = rkisp1_rsz_get_yuv_mbus_info(src_fmt->code);
+	rkisp1_pico_rsz_set_format(rsz, sink_yuv_info, src_yuv_info);
 
 	/*
 	 * The resizer only works on yuv formats, so return if it is bayer

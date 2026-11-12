@@ -8,6 +8,8 @@
  * Copyright (C) 2017 Rockchip Electronics Co., Ltd.
  */
 
+#include <linux/delay.h>
+#include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -17,6 +19,8 @@
 #include <media/v4l2-event.h>
 
 #include "rkisp1-common.h"
+
+static void rkisp1_pico_isp_irq_arm(struct rkisp1_device *rkisp1);
 
 #define RKISP1_DEF_SINK_PAD_FMT MEDIA_BUS_FMT_SRGGB10_1X10
 #define RKISP1_DEF_SRC_PAD_FMT MEDIA_BUS_FMT_YUYV8_2X8
@@ -181,6 +185,18 @@ static void rkisp1_config_ism(struct rkisp1_isp *isp,
 	struct rkisp1_device *rkisp1 = isp->rkisp1;
 	u32 val;
 
+	/* Pico has no IS block; the OUT window is the only crop. */
+	if (rkisp1_is_pico(rkisp1)) {
+		rkisp1_write(rkisp1, RKISP1_CIF_ISP_OUT_H_OFFS, src_crop->left);
+		rkisp1_write(rkisp1, RKISP1_CIF_ISP_OUT_V_OFFS, src_crop->top);
+		rkisp1_write(rkisp1, RKISP1_CIF_ISP_OUT_H_SIZE, src_crop->width);
+		rkisp1_write(rkisp1, RKISP1_CIF_ISP_OUT_V_SIZE, src_crop->height);
+		val = rkisp1_read(rkisp1, RKISP1_CIF_ISP_CTRL);
+		val |= RKISP1_CIF_ISP_CTRL_ISP_CFG_UPD;
+		rkisp1_write(rkisp1, RKISP1_CIF_ISP_CTRL, val);
+		return;
+	}
+
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_IS_RECENTER, 0);
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_IS_MAX_DX, 0);
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_IS_MAX_DY, 0);
@@ -195,6 +211,100 @@ static void rkisp1_config_ism(struct rkisp1_isp *isp,
 	val = rkisp1_read(rkisp1, RKISP1_CIF_ISP_CTRL);
 	val |= RKISP1_CIF_ISP_CTRL_ISP_CFG_UPD;
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_CTRL, val);
+}
+
+static u32 rkisp1_pico_tpg_hv(u32 h, u32 v)
+{
+	return ((h & RKISP1_PICO_TPG_HV_MASK) << RKISP1_PICO_TPG_HV_SHIFT) |
+	       (v & RKISP1_PICO_TPG_HV_MASK);
+}
+
+static void rkisp1_pico_config_tpg(struct rkisp1_isp *isp,
+				   const struct v4l2_subdev_state *sd_state)
+{
+	struct rkisp1_device *rkisp1 = isp->rkisp1;
+	const struct v4l2_mbus_framefmt *sink;
+	const struct rkisp1_mbus_info *fmt;
+	unsigned int depth, resolution;
+	u32 width, height, htot, vtot, ctrl;
+
+	sink = v4l2_subdev_state_get_format(sd_state, RKISP1_ISP_PAD_SINK_VIDEO);
+	fmt = rkisp1_mbus_info_get_by_code(sink->code);
+	width = sink->width;
+	height = sink->height;
+	htot = width + RKISP1_PICO_TPG_FP_H + RKISP1_PICO_TPG_BP_H +
+	       RKISP1_PICO_TPG_HS_W;
+	vtot = height + RKISP1_PICO_TPG_FP_V + RKISP1_PICO_TPG_BP_V +
+	       RKISP1_PICO_TPG_VS_W;
+
+	switch (fmt ? fmt->bus_width : 12) {
+	case 8:
+		depth = 0;
+		break;
+	case 10:
+		depth = 1;
+		break;
+	default:
+		depth = 2;
+		break;
+	}
+
+	/*
+	 * 00/01/10 force 1080p, 720p, or 4K and ignore TOTAL/ACT.
+	 * 560x560 has to use the programmed timing.
+	 * Enable stays clear until the ISP output is on.
+	 */
+	resolution = RKISP1_PICO_TPG_RES_USER >> RKISP1_PICO_TPG_RESOLUTION_SHIFT;
+
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_GAP_IN,
+			rkisp1_pico_tpg_hv(RKISP1_PICO_TPG_PIX_GAP,
+					   RKISP1_PICO_TPG_LINE_GAP));
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_GAP_STD_IN,
+			RKISP1_PICO_TPG_GAP_STD);
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_RANDOM_SEED, 0xaa55aa55);
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_TOTAL_IN,
+			rkisp1_pico_tpg_hv(htot, vtot));
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_ACT_IN,
+			rkisp1_pico_tpg_hv(width, height));
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_FP_IN,
+			rkisp1_pico_tpg_hv(RKISP1_PICO_TPG_FP_H,
+					   RKISP1_PICO_TPG_FP_V));
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_BP_IN,
+			rkisp1_pico_tpg_hv(RKISP1_PICO_TPG_BP_H,
+					   RKISP1_PICO_TPG_BP_V));
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_W_IN,
+			rkisp1_pico_tpg_hv(RKISP1_PICO_TPG_HS_W,
+					   RKISP1_PICO_TPG_VS_W));
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_FRAME_NUM, 0);
+
+	ctrl = RKISP1_PICO_TPG_MAX_SYNC |
+	       ((fmt ? fmt->bayer_pat : 0) << RKISP1_PICO_TPG_CFA_PAT_SHIFT) |
+	       (depth << RKISP1_PICO_TPG_COLOR_DEPTH_SHIFT) |
+	       (resolution << RKISP1_PICO_TPG_RESOLUTION_SHIFT);
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_CTRL, ctrl);
+}
+
+static void rkisp1_pico_tpg_enable(struct rkisp1_isp *isp,
+				   const struct v4l2_subdev_state *sd_state)
+{
+	struct rkisp1_device *rkisp1 = isp->rkisp1;
+	const struct v4l2_mbus_framefmt *sink;
+	u32 ctrl;
+
+	ctrl = rkisp1_read_hw(rkisp1, RKISP1_PICO_ISP_TPG_CTRL);
+	ctrl |= RKISP1_PICO_TPG_ENABLE;
+	rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_CTRL, ctrl);
+
+	usleep_range(RKISP1_PICO_TPG_STATUS_DELAY_US,
+		     RKISP1_PICO_TPG_STATUS_DELAY_US + 1000);
+
+	sink = v4l2_subdev_state_get_format(sd_state, RKISP1_ISP_PAD_SINK_VIDEO);
+	dev_dbg(rkisp1->dev,
+		"Pico TPG enabled %ux%u MI_RIS %08x ISP_RIS %08x ISP_ERR %08x\n",
+		sink->width, sink->height,
+		rkisp1_read(rkisp1, RKISP1_CIF_MI_RIS),
+		rkisp1_read(rkisp1, RKISP1_CIF_ISP_RIS),
+		rkisp1_read(rkisp1, RKISP1_CIF_ISP_ERR));
 }
 
 /*
@@ -282,6 +392,9 @@ static int rkisp1_config_isp(struct rkisp1_isp *isp,
 			acq_prop |= RKISP1_CIF_ISP_ACQ_PROP_HSYNC_LOW;
 	}
 
+	if (rkisp1_is_pico(rkisp1))
+		isp_ctrl |= RKISP1_CIF_ISP_CTRL_PICO_SRAM_CLK_EN |
+			    RKISP1_CIF_ISP_CTRL_ISP_CFG_UPD_PERMANENT;
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_CTRL, isp_ctrl);
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_ACQ_PROP,
 		     acq_prop | sink_fmt->yuv_seq |
@@ -302,8 +415,17 @@ static int rkisp1_config_isp(struct rkisp1_isp *isp,
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_OUT_H_SIZE, sink_crop->width);
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_OUT_V_SIZE, sink_crop->height);
 
-	irq_mask |= RKISP1_CIF_ISP_FRAME | RKISP1_CIF_ISP_V_START |
-		    RKISP1_CIF_ISP_PIC_SIZE_ERROR;
+	irq_mask |= RKISP1_CIF_ISP_V_START;
+	/*
+	 * Pico picture-size errors stay asserted and the resulting interrupt
+	 * storm stalls the CPU. Leave that source masked; V_START is enough
+	 * to see frames.
+	 */
+	if (!rkisp1_is_pico(rkisp1))
+		irq_mask |= RKISP1_CIF_ISP_PIC_SIZE_ERROR;
+	/* Pico latches 3A on MI frame-end; keep ISP FRAME off to avoid a double update. */
+	if (!rkisp1_is_pico(rkisp1))
+		irq_mask |= RKISP1_CIF_ISP_FRAME;
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_IMSC, irq_mask);
 
 	if (src_fmt->pixel_enc == V4L2_PIXEL_ENC_BAYER) {
@@ -319,6 +441,9 @@ static int rkisp1_config_isp(struct rkisp1_isp *isp,
 	}
 
 	isp->sink_fmt = sink_fmt;
+
+	if (rkisp1->tpg && rkisp1_is_pico(rkisp1))
+		rkisp1_pico_config_tpg(isp, sd_state);
 
 	return 0;
 }
@@ -385,6 +510,12 @@ static void rkisp1_isp_stop(struct rkisp1_isp *isp)
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_ICR, ~0);
 	rkisp1_write(rkisp1, RKISP1_CIF_MI_ICR, ~0);
 
+	if (rkisp1->tpg && rkisp1_is_pico(rkisp1)) {
+		val = rkisp1_read_hw(rkisp1, RKISP1_PICO_ISP_TPG_CTRL);
+		val &= ~RKISP1_PICO_TPG_ENABLE;
+		rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_CTRL, val);
+	}
+
 	/* stop ISP */
 	val = rkisp1_read(rkisp1, RKISP1_CIF_ISP_CTRL);
 	val &= ~(RKISP1_CIF_ISP_CTRL_ISP_INFORM_ENABLE |
@@ -395,22 +526,83 @@ static void rkisp1_isp_stop(struct rkisp1_isp *isp)
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_CTRL,
 		     val | RKISP1_CIF_ISP_CTRL_ISP_CFG_UPD);
 
-	readx_poll_timeout(readl, rkisp1->base_addr + RKISP1_CIF_ISP_RIS,
+	readx_poll_timeout(readl,
+			   rkisp1->base_addr +
+			   rkisp1_map_reg(rkisp1, RKISP1_CIF_ISP_RIS),
 			   val, val & RKISP1_CIF_ISP_OFF, 20, 100);
-	rkisp1_write(rkisp1, RKISP1_CIF_VI_IRCL,
-		     RKISP1_CIF_VI_IRCL_MIPI_SW_RST |
-		     RKISP1_CIF_VI_IRCL_ISP_SW_RST);
+
+	if (rkisp1_is_pico(rkisp1)) {
+		rkisp1_write_hw(rkisp1, RKISP1_PICO_ISP_TPG_CTRL, 0);
+		rkisp1_write(rkisp1, RKISP1_CIF_VI_IRCL,
+			     RKISP1_CIF_VI_IRCL_ISP_SW_RST |
+			     RKISP1_CIF_VI_IRCL_MRSZ_SW_RST |
+			     RKISP1_CIF_VI_IRCL_MI_SW_RST);
+	} else {
+		rkisp1_write(rkisp1, RKISP1_CIF_VI_IRCL,
+			     RKISP1_CIF_VI_IRCL_MIPI_SW_RST |
+			     RKISP1_CIF_VI_IRCL_ISP_SW_RST);
+	}
 	rkisp1_write(rkisp1, RKISP1_CIF_VI_IRCL, 0x0);
 
 	if (rkisp1->info->isp_ver == RKISP1_V_IMX8MP)
 		rkisp1_gasket_disable(rkisp1);
 }
 
+/*
+ * Pico submodule clocks and soft reset. Capture programs the MI before
+ * ISP s_stream, so this has to run at runtime resume, not only in
+ * rkisp1_config_clk(). The clock and reset block is CCL, ICCL, IRCL.
+ * Only the MI, main-resizer, YCS, and ISP reset bits exist.
+ * The reset pulse clears ICCL, so the clock enables are written after it.
+ */
+#define RKISP1_PICO_RESET_DELAY_US	5
+
+void rkisp1_pico_hw_init(struct rkisp1_device *rkisp1)
+{
+	u32 ccl;
+
+	if (!rkisp1_is_pico(rkisp1))
+		return;
+
+	rkisp1_write(rkisp1, RKISP1_CIF_VI_IRCL,
+		     RKISP1_CIF_VI_IRCL_CIF_SW_RST |
+		     RKISP1_CIF_VI_IRCL_MI_SW_RST |
+		     RKISP1_CIF_VI_IRCL_MRSZ_SW_RST |
+		     RKISP1_CIF_VI_IRCL_YCS_SW_RST |
+		     RKISP1_CIF_VI_IRCL_ISP_SW_RST);
+	udelay(RKISP1_PICO_RESET_DELAY_US);
+	rkisp1_write(rkisp1, RKISP1_CIF_VI_IRCL, 0);
+
+	ccl = rkisp1_read(rkisp1, RKISP1_CIF_VI_CCL);
+	ccl &= ~RKISP1_CIF_VI_CCL_CLK_DIS;
+	rkisp1_write(rkisp1, RKISP1_CIF_VI_CCL, ccl);
+
+	rkisp1_write(rkisp1, RKISP1_CIF_VI_ICCL,
+		     RKISP1_CIF_VI_ICCL_MI_CLK |
+		     RKISP1_CIF_VI_ICCL_MRSZ_CLK |
+		     RKISP1_CIF_VI_ICCL_ISP_CLK);
+
+	dev_dbg(rkisp1->dev, "Pico CCL %08x ICCL %08x MI_CTRL %08x\n",
+		rkisp1_read(rkisp1, RKISP1_CIF_VI_CCL),
+		rkisp1_read(rkisp1, RKISP1_CIF_VI_ICCL),
+		rkisp1_read(rkisp1, RKISP1_CIF_MI_CTRL));
+}
+
 static void rkisp1_config_clk(struct rkisp1_isp *isp)
 {
 	struct rkisp1_device *rkisp1 = isp->rkisp1;
+	u32 val;
 
-	u32 val = RKISP1_CIF_VI_ICCL_ISP_CLK | RKISP1_CIF_VI_ICCL_CP_CLK |
+	if (rkisp1_is_pico(rkisp1)) {
+		/* Only the MI, main resizer, and ISP clocks exist. */
+		rkisp1_write(rkisp1, RKISP1_CIF_VI_ICCL,
+			     RKISP1_CIF_VI_ICCL_MI_CLK |
+			     RKISP1_CIF_VI_ICCL_MRSZ_CLK |
+			     RKISP1_CIF_VI_ICCL_ISP_CLK);
+		return;
+	}
+
+	val = RKISP1_CIF_VI_ICCL_ISP_CLK | RKISP1_CIF_VI_ICCL_CP_CLK |
 		  RKISP1_CIF_VI_ICCL_MRSZ_CLK | RKISP1_CIF_VI_ICCL_SRSZ_CLK |
 		  RKISP1_CIF_VI_ICCL_JPEG_CLK | RKISP1_CIF_VI_ICCL_MI_CLK |
 		  RKISP1_CIF_VI_ICCL_IE_CLK | RKISP1_CIF_VI_ICCL_MIPI_CLK |
@@ -441,6 +633,8 @@ static int rkisp1_isp_start(struct rkisp1_isp *isp,
 	rkisp1_config_clk(isp);
 
 	if (rkisp1->info->isp_ver == RKISP1_V_IMX8MP) {
+		if (!source)
+			return -EPIPE;
 		ret = rkisp1_gasket_enable(rkisp1, source);
 		if (ret)
 			return ret;
@@ -451,6 +645,8 @@ static int rkisp1_isp_start(struct rkisp1_isp *isp,
 	val |= RKISP1_CIF_ISP_CTRL_ISP_CFG_UPD |
 	       RKISP1_CIF_ISP_CTRL_ISP_ENABLE |
 	       RKISP1_CIF_ISP_CTRL_ISP_INFORM_ENABLE;
+	if (rkisp1_is_pico(rkisp1))
+		val |= RKISP1_CIF_ISP_CTRL_PICO_SRAM_CLK_EN;
 	rkisp1_write(rkisp1, RKISP1_CIF_ISP_CTRL, val);
 
 	src_fmt = v4l2_subdev_state_get_format(sd_state,
@@ -459,6 +655,9 @@ static int rkisp1_isp_start(struct rkisp1_isp *isp,
 
 	if (src_info->pixel_enc != V4L2_PIXEL_ENC_BAYER)
 		rkisp1_params_post_configure(&rkisp1->params);
+
+	if (rkisp1->tpg && rkisp1_is_pico(rkisp1))
+		rkisp1_pico_tpg_enable(isp, sd_state);
 
 	return 0;
 }
@@ -560,6 +759,8 @@ static int rkisp1_isp_init_state(struct v4l2_subdev *sd,
 	sink_fmt->height = RKISP1_DEFAULT_HEIGHT;
 	sink_fmt->field = V4L2_FIELD_NONE;
 	sink_fmt->code = RKISP1_DEF_SINK_PAD_FMT;
+	if (rkisp1_is_pico(to_rkisp1_isp(sd)->rkisp1))
+		sink_fmt->code = MEDIA_BUS_FMT_SBGGR12_1X12;
 	sink_fmt->colorspace = V4L2_COLORSPACE_RAW;
 	sink_fmt->xfer_func = V4L2_XFER_FUNC_NONE;
 	sink_fmt->ycbcr_enc = V4L2_YCBCR_ENC_601;
@@ -916,6 +1117,32 @@ static const struct v4l2_subdev_pad_ops rkisp1_isp_pad_ops = {
  * Stream operations
  */
 
+/*
+ * CPI exposes pad enable_streams and has no video s_stream. Calling s_stream
+ * returns ENOIOCTLCMD, which VIDIOC_STREAMON reports as ENOTTY.
+ * enable_streams falls back to s_stream for a single-source sensor.
+ */
+static int rkisp1_isp_source_set_stream(struct rkisp1_device *rkisp1,
+					struct media_pad *source_pad,
+					bool enable)
+{
+	struct v4l2_subdev *sd = rkisp1->source;
+
+	if (!sd)
+		return 0;
+
+	if (sd->ops && v4l2_subdev_has_op(sd, video, s_stream))
+		return v4l2_subdev_call(sd, video, s_stream, enable);
+
+	if (IS_ERR_OR_NULL(source_pad))
+		return -EPIPE;
+
+	if (enable)
+		return v4l2_subdev_enable_streams(sd, source_pad->index, 1);
+
+	return v4l2_subdev_disable_streams(sd, source_pad->index, 1);
+}
+
 static int rkisp1_isp_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct rkisp1_isp *isp = to_rkisp1_isp(sd);
@@ -928,40 +1155,52 @@ static int rkisp1_isp_s_stream(struct v4l2_subdev *sd, int enable)
 	int ret;
 
 	if (!enable) {
-		v4l2_subdev_call(rkisp1->source, video, s_stream, false);
+		sink_pad = &isp->pads[RKISP1_ISP_PAD_SINK_VIDEO];
+		source_pad = media_pad_remote_pad_unique(sink_pad);
+		if (IS_ERR(source_pad))
+			source_pad = NULL;
+		rkisp1_isp_source_set_stream(rkisp1, source_pad, false);
+		rkisp1->source = NULL;
 		rkisp1_isp_stop(isp);
 		return 0;
 	}
 
 	sink_pad = &isp->pads[RKISP1_ISP_PAD_SINK_VIDEO];
 	source_pad = media_pad_remote_pad_unique(sink_pad);
-	if (IS_ERR(source_pad)) {
-		dev_dbg(rkisp1->dev, "Failed to get source for ISP: %ld\n",
-			PTR_ERR(source_pad));
-		return -EPIPE;
-	}
 
-	rkisp1->source = media_entity_to_v4l2_subdev(source_pad->entity);
-	if (!rkisp1->source) {
-		/* This should really not happen, so is not worth a message. */
-		return -EPIPE;
-	}
-
-	if (rkisp1->source == &rkisp1->csi.sd) {
-		mbus_type = V4L2_MBUS_CSI2_DPHY;
+	if (rkisp1->tpg && rkisp1_is_pico(rkisp1)) {
+		mbus_type = V4L2_MBUS_PARALLEL;
 		mbus_flags = 0;
+		rkisp1->source = NULL;
+		if (IS_ERR(source_pad))
+			source_pad = NULL;
 	} else {
-		const struct rkisp1_sensor_async *asd;
-		struct v4l2_async_connection *asc;
+		if (IS_ERR(source_pad)) {
+			dev_dbg(rkisp1->dev, "Failed to get source for ISP: %ld\n",
+				PTR_ERR(source_pad));
+			return -EPIPE;
+		}
 
-		asc = v4l2_async_connection_unique(rkisp1->source);
-		if (!asc)
+		rkisp1->source = media_entity_to_v4l2_subdev(source_pad->entity);
+		if (!rkisp1->source)
 			return -EPIPE;
 
-		asd = container_of(asc, struct rkisp1_sensor_async, asd);
+		if (rkisp1->source == &rkisp1->csi.sd) {
+			mbus_type = V4L2_MBUS_CSI2_DPHY;
+			mbus_flags = 0;
+		} else {
+			const struct rkisp1_sensor_async *asd;
+			struct v4l2_async_connection *asc;
 
-		mbus_type = asd->mbus_type;
-		mbus_flags = asd->mbus_flags;
+			asc = v4l2_async_connection_unique(rkisp1->source);
+			if (!asc)
+				return -EPIPE;
+
+			asd = container_of(asc, struct rkisp1_sensor_async, asd);
+
+			mbus_type = asd->mbus_type;
+			mbus_flags = asd->mbus_flags;
+		}
 	}
 
 	isp->frame_sequence = -1;
@@ -972,14 +1211,36 @@ static int rkisp1_isp_s_stream(struct v4l2_subdev *sd, int enable)
 	if (ret)
 		goto out_unlock;
 
+	/*
+	 * IMSC is programmed. Drop stale status, then re-enable the GIC line
+	 * if the previous stream masked it. Enabling earlier runs the handler
+	 * with IMSC clear, so a stuck line returns IRQ_NONE and spins.
+	 */
+	if (rkisp1_is_pico(rkisp1))
+		rkisp1_pico_isp_irq_arm(rkisp1);
+
 	ret = rkisp1_isp_start(isp, sd_state, source_pad);
 	if (ret)
 		goto out_unlock;
 
-	ret = v4l2_subdev_call(rkisp1->source, video, s_stream, true);
-	if (ret) {
-		rkisp1_isp_stop(isp);
-		goto out_unlock;
+	if (rkisp1->source) {
+		ret = rkisp1_isp_source_set_stream(rkisp1, source_pad, true);
+		if (ret) {
+			rkisp1_isp_stop(isp);
+			goto out_unlock;
+		}
+
+		if (rkisp1_is_pico(rkisp1)) {
+			usleep_range(RKISP1_PICO_TPG_STATUS_DELAY_US,
+				     RKISP1_PICO_TPG_STATUS_DELAY_US + 1000);
+			dev_dbg(rkisp1->dev,
+				"Pico live CTRL %08x ACQ_PROP %08x MI_RIS %08x ISP_RIS %08x ISP_ERR %08x\n",
+				rkisp1_read(rkisp1, RKISP1_CIF_ISP_CTRL),
+				rkisp1_read(rkisp1, RKISP1_CIF_ISP_ACQ_PROP),
+				rkisp1_read(rkisp1, RKISP1_CIF_MI_RIS),
+				rkisp1_read(rkisp1, RKISP1_CIF_ISP_RIS),
+				rkisp1_read(rkisp1, RKISP1_CIF_ISP_ERR));
+		}
 	}
 
 out_unlock:
@@ -1086,6 +1347,39 @@ void rkisp1_isp_unregister(struct rkisp1_device *rkisp1)
  * Interrupt handlers
  */
 
+static void rkisp1_pico_isp_irq_quiesce(struct rkisp1_device *rkisp1)
+{
+	u32 err;
+
+	rkisp1_write(rkisp1, RKISP1_CIF_ISP_IMSC, 0);
+	rkisp1_write(rkisp1, RKISP1_CIF_ISP_ICR, ~0);
+	err = rkisp1_read(rkisp1, RKISP1_CIF_ISP_ERR);
+	if (err)
+		rkisp1_write(rkisp1, RKISP1_CIF_ISP_ERR_CLR, err);
+	if (rkisp1->pico_isp_irq_dropped)
+		return;
+
+	disable_irq_nosync(rkisp1->irqs[RKISP1_IRQ_ISP]);
+	rkisp1->pico_isp_irq_dropped = true;
+}
+
+static void rkisp1_pico_isp_irq_arm(struct rkisp1_device *rkisp1)
+{
+	rkisp1_write(rkisp1, RKISP1_CIF_ISP_ICR, ~0);
+	rkisp1->pico_isp_irqs = 0;
+	if (!rkisp1->pico_isp_irq_dropped)
+		return;
+
+	rkisp1->pico_isp_irq_dropped = false;
+	enable_irq(rkisp1->irqs[RKISP1_IRQ_ISP]);
+}
+
+void rkisp1_pico_isp_irq_frame(struct rkisp1_device *rkisp1)
+{
+	if (rkisp1_is_pico(rkisp1))
+		rkisp1->pico_isp_irqs = 0;
+}
+
 static void rkisp1_isp_queue_event_sof(struct rkisp1_isp *isp)
 {
 	struct v4l2_event event = {
@@ -1106,6 +1400,18 @@ irqreturn_t rkisp1_isp_isr(int irq, void *ctx)
 		return IRQ_NONE;
 
 	status = rkisp1_read(rkisp1, RKISP1_CIF_ISP_MIS);
+	/*
+	 * A masked Pico source can still hold the raw line. MIS is then 0, and
+	 * returning IRQ_NONE lets that line spin until the kernel calls it
+	 * spurious. Mask it at the GIC instead. A live V_START storm is the
+	 * same failure with MIS non-zero; one interrupt per MI frame stays
+	 * under the limit because the frame path clears the count.
+	 */
+	if (rkisp1_is_pico(rkisp1) &&
+	    (!status || ++rkisp1->pico_isp_irqs >= RKISP1_PICO_ISP_IRQ_STORM)) {
+		rkisp1_pico_isp_irq_quiesce(rkisp1);
+		return IRQ_HANDLED;
+	}
 	if (!status)
 		return IRQ_NONE;
 

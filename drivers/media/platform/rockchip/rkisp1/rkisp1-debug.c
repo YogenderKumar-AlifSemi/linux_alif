@@ -223,6 +223,9 @@ void rkisp1_debug_init(struct rkisp1_device *rkisp1)
 			     &debug->frame_drop[RKISP1_SELFPATH]);
 	debugfs_create_ulong("complete_frames", 0444, debug->debugfs_dir,
 			     &debug->complete_frames);
+	if (rkisp1_is_pico(rkisp1))
+		debugfs_create_bool("tpg", 0644, debug->debugfs_dir,
+				    &rkisp1->tpg);
 	debugfs_create_file("input_status", 0444, debug->debugfs_dir, rkisp1,
 			    &rkisp1_debug_input_status_fops);
 

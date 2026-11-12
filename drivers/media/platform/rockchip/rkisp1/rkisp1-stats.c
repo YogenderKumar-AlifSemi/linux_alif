@@ -331,6 +331,11 @@ static const struct rkisp1_stats_ops rkisp1_v10_stats_ops = {
 	.get_hst_meas = rkisp1_stats_get_hst_meas_v10,
 };
 
+static const struct rkisp1_stats_ops rkisp1_pico_stats_ops = {
+	.get_awb_meas = rkisp1_stats_get_awb_meas_v10,
+	.get_aec_meas = rkisp1_stats_get_aec_meas_v10,
+};
+
 static struct rkisp1_stats_ops rkisp1_v12_stats_ops = {
 	.get_awb_meas = rkisp1_stats_get_awb_meas_v12,
 	.get_aec_meas = rkisp1_stats_get_aec_meas_v12,
@@ -360,15 +365,18 @@ rkisp1_stats_send_measurement(struct rkisp1_stats *stats, u32 isp_ris)
 	if (isp_ris & RKISP1_CIF_ISP_AWB_DONE)
 		stats->ops->get_awb_meas(stats, cur_stat_buf);
 
-	if (isp_ris & RKISP1_CIF_ISP_AFM_FIN)
+	if ((isp_ris & RKISP1_CIF_ISP_AFM_FIN) &&
+	    !rkisp1_is_pico(stats->rkisp1))
 		rkisp1_stats_get_afc_meas(stats, cur_stat_buf);
 
 	if (isp_ris & RKISP1_CIF_ISP_EXP_END) {
 		stats->ops->get_aec_meas(stats, cur_stat_buf);
-		rkisp1_stats_get_bls_meas(stats, cur_stat_buf);
+		if (!rkisp1_is_pico(stats->rkisp1))
+			rkisp1_stats_get_bls_meas(stats, cur_stat_buf);
 	}
 
-	if (isp_ris & RKISP1_CIF_ISP_HIST_MEASURE_RDY)
+	if ((isp_ris & RKISP1_CIF_ISP_HIST_MEASURE_RDY) &&
+	    stats->ops->get_hst_meas)
 		stats->ops->get_hst_meas(stats, cur_stat_buf);
 
 	vb2_set_plane_payload(&cur_buf->vb.vb2_buf, 0,
@@ -382,16 +390,18 @@ void rkisp1_stats_isr(struct rkisp1_stats *stats, u32 isp_ris)
 {
 	struct rkisp1_device *rkisp1 = stats->rkisp1;
 	unsigned int isp_mis_tmp = 0;
+	u32 meas_mask = rkisp1_is_pico(rkisp1) ? RKISP1_PICO_STATS_MEAS_MASK :
+						 RKISP1_STATS_MEAS_MASK;
 
 	spin_lock(&stats->lock);
 
-	rkisp1_write(rkisp1, RKISP1_CIF_ISP_ICR, RKISP1_STATS_MEAS_MASK);
+	rkisp1_write(rkisp1, RKISP1_CIF_ISP_ICR, meas_mask);
 
 	isp_mis_tmp = rkisp1_read(rkisp1, RKISP1_CIF_ISP_MIS);
-	if (isp_mis_tmp & RKISP1_STATS_MEAS_MASK)
+	if (isp_mis_tmp & meas_mask)
 		rkisp1->debug.stats_error++;
 
-	if (isp_ris & RKISP1_STATS_MEAS_MASK)
+	if (isp_ris & meas_mask)
 		rkisp1_stats_send_measurement(stats, isp_ris);
 
 	spin_unlock(&stats->lock);
@@ -406,6 +416,8 @@ static void rkisp1_init_stats(struct rkisp1_stats *stats)
 
 	if (stats->rkisp1->info->isp_ver == RKISP1_V12)
 		stats->ops = &rkisp1_v12_stats_ops;
+	else if (rkisp1_is_pico(stats->rkisp1))
+		stats->ops = &rkisp1_pico_stats_ops;
 	else
 		stats->ops = &rkisp1_v10_stats_ops;
 }

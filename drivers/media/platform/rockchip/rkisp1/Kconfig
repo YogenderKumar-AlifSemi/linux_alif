@@ -3,7 +3,7 @@ config VIDEO_ROCKCHIP_ISP1
 	tristate "Rockchip Image Signal Processing v1 Unit driver"
 	depends on V4L_PLATFORM_DRIVERS
 	depends on VIDEO_DEV && OF
-	depends on ARCH_ROCKCHIP || ARCH_MXC || COMPILE_TEST
+	depends on ARCH_ROCKCHIP || ARCH_MXC || ARCH_ENSEMBLE || COMPILE_TEST
 	select MEDIA_CONTROLLER
 	select VIDEO_V4L2_SUBDEV_API
 	select VIDEOBUF2_DMA_CONTIG
@@ -13,7 +13,8 @@ config VIDEO_ROCKCHIP_ISP1
 	default n
 	help
 	  Enable this to support the Image Signal Processing (ISP) module
-	  present in RK3399 SoCs.
+	  present in RK3399, PX30, i.MX8MP, and Alif Ensemble (ISP8000Pico)
+	  SoCs.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called rockchip-isp1.

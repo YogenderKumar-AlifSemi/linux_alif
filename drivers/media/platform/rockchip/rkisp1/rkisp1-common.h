@@ -13,6 +13,7 @@
 
 #include <linux/clk.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
 #include <linux/mutex.h>
 #include <linux/rkisp1-config.h>
 #include <media/media-device.h>
@@ -62,6 +63,20 @@ struct regmap;
 						 RKISP1_CIF_ISP_AFM_FIN |	\
 						 RKISP1_CIF_ISP_EXP_END |	\
 						 RKISP1_CIF_ISP_HIST_MEASURE_RDY)
+
+/* Pico 3A: AE 5×5 + AWB mean/count. No hist / AF. */
+#define RKISP1_PICO_STATS_MEAS_MASK		(RKISP1_CIF_ISP_AWB_DONE |	\
+						 RKISP1_CIF_ISP_EXP_END)
+
+/* Params blocks that exist on Pico. */
+#define RKISP1_PICO_PARAMS_MODULES		(RKISP1_CIF_ISP_MODULE_BLS |	\
+						 RKISP1_CIF_ISP_MODULE_AWB_GAIN |\
+						 RKISP1_CIF_ISP_MODULE_FLT |	\
+						 RKISP1_CIF_ISP_MODULE_BDM |	\
+						 RKISP1_CIF_ISP_MODULE_CTK |	\
+						 RKISP1_CIF_ISP_MODULE_GOC |	\
+						 RKISP1_CIF_ISP_MODULE_AWB |	\
+						 RKISP1_CIF_ISP_MODULE_AEC)
 
 /* IRQ lines */
 enum rkisp1_irq_line {
@@ -499,6 +514,7 @@ struct rkisp1_debug {
  * @info:	   version-specific ISP information
  * @irqs:          IRQ line numbers
  * @irqs_enabled:  the hardware is enabled and can cause interrupts
+ * @tpg:	   Pico TPG: generate Bayer internally, do not start CPI/sensor
  */
 struct rkisp1_device {
 	void __iomem *base_addr;
@@ -523,6 +539,15 @@ struct rkisp1_device {
 	const struct rkisp1_info *info;
 	int irqs[RKISP1_NUM_IRQS];
 	bool irqs_enabled;
+	bool tpg;
+	/*
+	 * Set when a stuck Pico ISP interrupt is masked at the GIC. The line
+	 * can stay asserted after IMSC is cleared, so it is re-enabled only
+	 * once IMSC is programmed again. pico_isp_irqs counts ISP IRQs since
+	 * the last MI frame.
+	 */
+	bool pico_isp_irq_dropped;
+	unsigned int pico_isp_irqs;
 };
 
 /*
@@ -547,15 +572,43 @@ struct rkisp1_mbus_info {
 	unsigned int direction;
 };
 
+unsigned int rkisp1_map_reg(const struct rkisp1_device *rkisp1,
+			    unsigned int addr);
+
+void rkisp1_pico_hw_init(struct rkisp1_device *rkisp1);
+
+static inline bool rkisp1_is_pico(const struct rkisp1_device *rkisp1)
+{
+	return rkisp1->info->isp_ver == RKISP1_V_PICO;
+}
+
+static inline void rkisp1_write_hw(struct rkisp1_device *rkisp1,
+				   unsigned int hw_addr, u32 val)
+{
+	writel(val, rkisp1->base_addr + hw_addr);
+}
+
+static inline u32 rkisp1_read_hw(struct rkisp1_device *rkisp1,
+				 unsigned int hw_addr)
+{
+	return readl(rkisp1->base_addr + hw_addr);
+}
+
 static inline void
 rkisp1_write(struct rkisp1_device *rkisp1, unsigned int addr, u32 val)
 {
-	writel(val, rkisp1->base_addr + addr);
+	addr = rkisp1_map_reg(rkisp1, addr);
+	if (addr == RKISP1_REG_NONE)
+		return;
+	rkisp1_write_hw(rkisp1, addr, val);
 }
 
 static inline u32 rkisp1_read(struct rkisp1_device *rkisp1, unsigned int addr)
 {
-	return readl(rkisp1->base_addr + addr);
+	addr = rkisp1_map_reg(rkisp1, addr);
+	if (addr == RKISP1_REG_NONE)
+		return 0;
+	return rkisp1_read_hw(rkisp1, addr);
 }
 
 /*
@@ -658,6 +711,7 @@ irqreturn_t rkisp1_csi_isr(int irq, void *ctx);
 irqreturn_t rkisp1_capture_isr(int irq, void *ctx);
 void rkisp1_stats_isr(struct rkisp1_stats *stats, u32 isp_ris);
 void rkisp1_params_isr(struct rkisp1_device *rkisp1);
+void rkisp1_pico_isp_irq_frame(struct rkisp1_device *rkisp1);
 
 /* register/unregisters functions of the entities */
 int rkisp1_capture_devs_register(struct rkisp1_device *rkisp1);

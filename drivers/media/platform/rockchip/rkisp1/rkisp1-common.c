@@ -10,6 +10,127 @@
 
 #include "rkisp1-common.h"
 
+unsigned int rkisp1_map_reg(const struct rkisp1_device *rkisp1,
+			    unsigned int addr)
+{
+	if (!rkisp1_is_pico(rkisp1))
+		return addr;
+
+	/*
+	 * VI block through IRCL. Pico has no register at the Rockchip
+	 * VI_DPCL offset; a read there aborts the bus.
+	 */
+	if (addr < RKISP1_CIF_VI_DPCL)
+		return addr;
+	if (addr == RKISP1_CIF_VI_DPCL)
+		return RKISP1_REG_NONE;
+	if (addr >= RKISP1_CIF_ISP_CTRL && addr <= RKISP1_CIF_ISP_ACQ_V_SIZE)
+		return addr;
+	if (addr == RKISP1_CIF_ISP_ACQ_NR_FRAMES)
+		return RKISP1_REG_NONE;
+
+	/* Resizers keep the V10 bases. */
+	if (addr >= RKISP1_CIF_MRSZ_BASE && addr < RKISP1_CIF_MRSZ_BASE + 0x80)
+		return addr;
+	if (addr >= RKISP1_CIF_SRSZ_BASE && addr < RKISP1_CIF_SRSZ_BASE + 0x80)
+		return addr;
+
+	/*
+	 * MI moves from 0x1400 to 0x0e00. Pico has no self-path block
+	 * after the main-path offset registers, none between the MP
+	 * shadow block and the MI IRQ block, and none between
+	 * MP_CR_BASE_AD_INIT2 and Y_LLENGTH (that gap includes
+	 * MI_XTD_FORMAT_CTRL).
+	 */
+	if (addr >= RKISP1_CIF_MI_BASE && addr < RKISP1_CIF_MI_BASE + 0x180) {
+		if (addr >= RKISP1_CIF_MI_SP_Y_BASE_AD_INIT &&
+		    addr <= RKISP1_CIF_MI_SP_CR_OFFS_CNT_START)
+			return RKISP1_REG_NONE;
+		if (addr > RKISP1_CIF_MI_MP_CR_OFFS_CNT_SHD &&
+		    addr < RKISP1_CIF_MI_IMSC)
+			return RKISP1_REG_NONE;
+		if (addr >= RKISP1_CIF_MI_SP_Y_BASE_AD_INIT2 &&
+		    addr < RKISP1_CIF_MI_MP_Y_LLENGTH)
+			return RKISP1_REG_NONE;
+		if (addr == RKISP1_CIF_MI_MP_Y_SLICE_OFFSET ||
+		    addr == RKISP1_CIF_MI_MP_C_SLICE_OFFSET)
+			return RKISP1_REG_NONE;
+		return RKISP1_PICO_MI_BASE + (addr - RKISP1_CIF_MI_BASE);
+	}
+
+	/* ISP IRQ block */
+	if (addr >= RKISP1_CIF_ISP_IMSC && addr <= RKISP1_CIF_ISP_ISR)
+		return RKISP1_PICO_ISP_IMSC + (addr - RKISP1_CIF_ISP_IMSC);
+	if (addr == RKISP1_CIF_ISP_ERR)
+		return RKISP1_PICO_ISP_ERR;
+	if (addr == RKISP1_CIF_ISP_ERR_CLR)
+		return RKISP1_PICO_ISP_ERR + 4;
+
+	/* Output window (Pico has no IS block). */
+	if (addr >= RKISP1_CIF_ISP_OUT_H_OFFS && addr <= RKISP1_CIF_ISP_OUT_V_SIZE)
+		return RKISP1_PICO_ISP_OUT_H_OFFS +
+		       (addr - RKISP1_CIF_ISP_OUT_H_OFFS);
+	if (addr >= RKISP1_CIF_ISP_OUT_H_OFFS_SHD &&
+	    addr <= RKISP1_CIF_ISP_OUT_V_SIZE_SHD)
+		return RKISP1_PICO_ISP_OUT_H_OFFS_SHD +
+		       (addr - RKISP1_CIF_ISP_OUT_H_OFFS_SHD);
+
+	if (addr == RKISP1_CIF_ISP_DEMOSAIC)
+		return RKISP1_PICO_ISP_DEMOSAIC;
+
+	if (addr >= RKISP1_CIF_ISP_CC_COEFF_0 && addr <= RKISP1_CIF_ISP_CC_COEFF_8)
+		return RKISP1_PICO_ISP_CC_COEFF_0 +
+		       (addr - RKISP1_CIF_ISP_CC_COEFF_0);
+	if (addr >= RKISP1_CIF_ISP_CT_COEFF_0 && addr <= RKISP1_CIF_ISP_CT_COEFF_8)
+		return RKISP1_PICO_ISP_CT_COEFF_0 +
+		       (addr - RKISP1_CIF_ISP_CT_COEFF_0);
+	if (addr >= RKISP1_CIF_ISP_CT_OFFSET_R &&
+	    addr <= RKISP1_CIF_ISP_CT_OFFSET_B)
+		return RKISP1_PICO_ISP_CT_OFFSET_R +
+		       (addr - RKISP1_CIF_ISP_CT_OFFSET_R);
+
+	if (addr >= RKISP1_CIF_ISP_GAMMA_OUT_MODE_V10 &&
+	    addr <= RKISP1_CIF_ISP_GAMMA_OUT_Y_16_V10)
+		return RKISP1_PICO_ISP_GAMMA_OUT_MODE +
+		       (addr - RKISP1_CIF_ISP_GAMMA_OUT_MODE_V10);
+
+	if (addr >= RKISP1_CIF_ISP_AWB_PROP_V10 &&
+	    addr <= RKISP1_CIF_ISP_AWB_THRESH_V10)
+		return RKISP1_PICO_ISP_AWB_PROP +
+		       (addr - RKISP1_CIF_ISP_AWB_PROP_V10);
+	if (addr == RKISP1_CIF_ISP_AWB_GAIN_G_V10)
+		return RKISP1_PICO_ISP_DGAIN_G;
+	if (addr == RKISP1_CIF_ISP_AWB_GAIN_RB_V10)
+		return RKISP1_PICO_ISP_DGAIN_RB;
+	if (addr == RKISP1_CIF_ISP_AWB_WHITE_CNT_V10)
+		return RKISP1_PICO_ISP_AWB_WHITE_CNT;
+	if (addr == RKISP1_CIF_ISP_AWB_MEAN_V10)
+		return RKISP1_PICO_ISP_AWB_MEAN;
+
+	if (addr == RKISP1_CIF_ISP_BLS_CTRL)
+		return RKISP1_PICO_ISP_BLS_CTRL;
+	if (addr >= RKISP1_CIF_ISP_BLS_A_FIXED && addr <= RKISP1_CIF_ISP_BLS_D_FIXED)
+		return RKISP1_PICO_ISP_BLS_A_FIXED +
+		       (addr - RKISP1_CIF_ISP_BLS_A_FIXED);
+
+	if (addr == RKISP1_CIF_ISP_FILT_MODE)
+		return RKISP1_PICO_ISP_FILT_MODE;
+	if (addr >= RKISP1_CIF_ISP_FILT_THRESH_BL0 &&
+	    addr <= RKISP1_CIF_ISP_FILT_FAC_BL1)
+		return RKISP1_PICO_ISP_FILT_THRESH_BL0 +
+		       (addr - RKISP1_CIF_ISP_FILT_THRESH_BL0);
+
+	if (addr >= RKISP1_CIF_ISP_EXP_CTRL &&
+	    addr <= RKISP1_CIF_ISP_EXP_MEAN_44_V10)
+		return RKISP1_PICO_ISP_EXP_CTRL + (addr - RKISP1_CIF_ISP_EXP_CTRL);
+
+	if (addr >= RKISP1_CIF_ISP_CAC_CTRL && addr <= RKISP1_CIF_ISP_Y_NORM)
+		return RKISP1_PICO_ISP_CAC_CTRL + (addr - RKISP1_CIF_ISP_CAC_CTRL);
+
+	/* LSC, hist, AF, DPF, dual-crop, IS, MIPI CSI: not on Pico. */
+	return RKISP1_REG_NONE;
+}
+
 static const struct rkisp1_mbus_info rkisp1_formats[] = {
 	{
 		.mbus_code	= MEDIA_BUS_FMT_YUYV8_2X8,

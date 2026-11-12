@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_graph.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
@@ -22,6 +23,11 @@
 
 #include "rkisp1-common.h"
 #include "rkisp1-csi.h"
+
+static bool pico_tpg;
+module_param(pico_tpg, bool, 0644);
+MODULE_PARM_DESC(pico_tpg,
+		 "Use ISP8000Pico TPG instead of the CPI parallel input");
 
 /*
  * ISP Details
@@ -328,9 +334,14 @@ static int __maybe_unused rkisp1_runtime_suspend(struct device *dev)
 	return pinctrl_pm_select_sleep_state(dev);
 }
 
-static int __maybe_unused rkisp1_runtime_resume(struct device *dev)
+/*
+ * devkit-e8 is built with CONFIG_PM off, so the runtime resume callback
+ * is never invoked. Call this from probe in that case. Otherwise late
+ * "Disabling unused clocks" gates the ISP and the next MI write aborts.
+ */
+static int rkisp1_power_on(struct rkisp1_device *rkisp1)
 {
-	struct rkisp1_device *rkisp1 = dev_get_drvdata(dev);
+	struct device *dev = rkisp1->dev;
 	int ret;
 
 	ret = pinctrl_pm_select_default_state(dev);
@@ -340,11 +351,18 @@ static int __maybe_unused rkisp1_runtime_resume(struct device *dev)
 	if (ret)
 		return ret;
 
+	rkisp1_pico_hw_init(rkisp1);
+
 	rkisp1->irqs_enabled = true;
 	/* Make sure the IRQ handler will see the above */
 	mb();
 
 	return 0;
+}
+
+static int __maybe_unused rkisp1_runtime_resume(struct device *dev)
+{
+	return rkisp1_power_on(dev_get_drvdata(dev));
 }
 
 static const struct dev_pm_ops rkisp1_pm_ops = {
@@ -562,6 +580,30 @@ static const struct rkisp1_info imx8mp_isp_info = {
 	.max_height = 3072,
 };
 
+/*
+ * Alif Ensemble E8 ISP8000Pico: parallel input from CPI, no internal CSI-2
+ * and no self-path. Register offsets are translated in rkisp1_map_reg().
+ */
+static const char * const ensemble_isp_clks[] = {
+	"isp",
+};
+
+static const struct rkisp1_isr_data ensemble_isp_isrs[] = {
+	{ "isp", rkisp1_isp_isr, BIT(RKISP1_IRQ_ISP) },
+	{ "mi", rkisp1_capture_isr, BIT(RKISP1_IRQ_MI) },
+};
+
+static const struct rkisp1_info ensemble_isp_pico_info = {
+	.clks = ensemble_isp_clks,
+	.clk_size = ARRAY_SIZE(ensemble_isp_clks),
+	.isrs = ensemble_isp_isrs,
+	.isr_size = ARRAY_SIZE(ensemble_isp_isrs),
+	.isp_ver = RKISP1_V_PICO,
+	.features = RKISP1_FEATURE_BLS,
+	.max_width = 1920,
+	.max_height = 1080,
+};
+
 static const struct of_device_id rkisp1_of_match[] = {
 	{
 		.compatible = "rockchip,px30-cif-isp",
@@ -574,6 +616,10 @@ static const struct of_device_id rkisp1_of_match[] = {
 	{
 		.compatible = "fsl,imx8mp-isp",
 		.data = &imx8mp_isp_info,
+	},
+	{
+		.compatible = "alif,ensemble-isp-pico",
+		.data = &ensemble_isp_pico_info,
 	},
 	{},
 };
@@ -589,6 +635,7 @@ static int rkisp1_probe(struct platform_device *pdev)
 	u64 dma_mask;
 	int ret, irq;
 	u32 cif_id;
+	bool clks_on = false;
 
 	rkisp1 = devm_kzalloc(dev, sizeof(*rkisp1), GFP_KERNEL);
 	if (!rkisp1)
@@ -596,6 +643,7 @@ static int rkisp1_probe(struct platform_device *pdev)
 
 	info = of_device_get_match_data(dev);
 	rkisp1->info = info;
+	rkisp1->tpg = pico_tpg && info->isp_ver == RKISP1_V_PICO;
 
 	dev_set_drvdata(dev, rkisp1);
 	rkisp1->dev = dev;
@@ -605,6 +653,11 @@ static int rkisp1_probe(struct platform_device *pdev)
 
 	ret = dma_set_mask_and_coherent(dev, dma_mask);
 	if (ret)
+		return ret;
+
+	/* Optional MI DMA pool. Ensemble uses one in HEXSPI0. */
+	ret = of_reserved_mem_device_init(dev);
+	if (ret && ret != -ENODEV)
 		return ret;
 
 	mutex_init(&rkisp1->stream_lock);
@@ -664,6 +717,13 @@ static int rkisp1_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_pm_runtime_disable;
 
+	if (!IS_ENABLED(CONFIG_PM)) {
+		ret = rkisp1_power_on(rkisp1);
+		if (ret)
+			goto err_pm_runtime_disable;
+		clks_on = true;
+	}
+
 	cif_id = rkisp1_read(rkisp1, RKISP1_CIF_VI_ID);
 	dev_dbg(rkisp1->dev, "CIF_ID 0x%08x\n", cif_id);
 
@@ -721,7 +781,10 @@ err_unreg_v4l2_dev:
 err_media_dev_cleanup:
 	media_device_cleanup(&rkisp1->media_dev);
 err_pm_runtime_disable:
+	if (clks_on)
+		clk_bulk_disable_unprepare(rkisp1->clk_size, rkisp1->clks);
 	pm_runtime_disable(&pdev->dev);
+	of_reserved_mem_device_release(dev);
 	return ret;
 }
 
@@ -743,6 +806,9 @@ static void rkisp1_remove(struct platform_device *pdev)
 	media_device_cleanup(&rkisp1->media_dev);
 
 	pm_runtime_disable(&pdev->dev);
+	if (!IS_ENABLED(CONFIG_PM))
+		clk_bulk_disable_unprepare(rkisp1->clk_size, rkisp1->clks);
+	of_reserved_mem_device_release(&pdev->dev);
 }
 
 static struct platform_driver rkisp1_drv = {

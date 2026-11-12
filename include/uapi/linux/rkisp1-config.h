@@ -188,6 +188,8 @@
  *	histogram as v12.
  * @RKISP1_V_IMX8MP: Used in at least i.MX8MP. Same number of entries in grids
  *	and histogram as v10.
+ * @RKISP1_V_PICO: VeriSilicon ISP8000Pico as used on Alif Ensemble E8.
+ *	1920x1080 max, parallel input only, no self-path.
  */
 enum rkisp1_cif_isp_version {
 	RKISP1_V10 = 10,
@@ -195,6 +197,7 @@ enum rkisp1_cif_isp_version {
 	RKISP1_V12,
 	RKISP1_V13,
 	RKISP1_V_IMX8MP,
+	RKISP1_V_PICO,
 };
 
 enum rkisp1_cif_isp_histogram_mode {
@@ -502,10 +505,14 @@ struct rkisp1_cif_isp_awb_meas_config {
 /**
  * struct rkisp1_cif_isp_awb_gain_config - Configuration used by auto white balance gain
  *
- * All fields in this struct are 10 bit, where:
+ * On Rockchip ISP versions the gain registers keep 10 bits:
  * 0x100h = 1, unsigned integer value, range 0 to 4 with 8 bit fractional part.
  *
  * out_data_x = ( AWB_GAIN_X * in_data + 128) >> 8
+ *
+ * ISP8000Pico writes these fields to the 16-bit digital-gain registers
+ * (ISP_DGAIN_RB / ISP_DGAIN_G) with the same 8.8 encoding, so the full
+ * __u16 value is programmed and is not clipped to 10 bits.
  *
  * @gain_red: gain value for red component.
  * @gain_green_r: gain value for green component in red line.

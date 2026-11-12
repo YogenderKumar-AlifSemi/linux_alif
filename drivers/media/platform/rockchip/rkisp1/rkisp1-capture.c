@@ -144,6 +144,18 @@ static const struct rkisp1_capture_fmt_cfg rkisp1_mp_fmts[] = {
 		.write_format = RKISP1_MI_CTRL_MP_WRITE_YUV_PLA_OR_RAW8,
 		.output_format = RKISP1_CIF_MI_INIT_MP_OUTPUT_YUV422,
 		.mbus = MEDIA_BUS_FMT_YUYV8_2X8,
+	}, {
+		/*
+		 * RGB888 is three planes. The MI selects that with a planar
+		 * write and YUV444, and the resizer output code is RGB888.
+		 * Main-path code 6 does not complete a frame on this ISP.
+		 * V4L2 has no RGB888-planar fourcc, so this is advertised as
+		 * YUV444M. The resizer media bus stays YUYV 4:2:2.
+		 */
+		.fourcc = V4L2_PIX_FMT_YUV444M,
+		.write_format = RKISP1_MI_CTRL_MP_WRITE_YUV_PLA_OR_RAW8,
+		.output_format = RKISP1_CIF_MI_INIT_MP_OUTPUT_YUV444,
+		.mbus = MEDIA_BUS_FMT_YUYV8_2X8,
 	},
 	/* yuv400 */
 	{
@@ -453,7 +465,14 @@ static void rkisp1_mi_config_ctrl(struct rkisp1_capture *cap)
 	mi_ctrl |= RKISP1_CIF_MI_CTRL_BURST_LEN_LUM_64;
 
 	mi_ctrl &= ~GENMASK(19, 18);
-	mi_ctrl |= RKISP1_CIF_MI_CTRL_BURST_LEN_CHROM_64;
+	/*
+	 * Vendor RGB888 planar uses a 4-beat chroma burst. A 16-beat chroma
+	 * burst on the three planes is enough to stall the CPU interconnect.
+	 */
+	if (cap->pix.cfg->fourcc == V4L2_PIX_FMT_YUV444M)
+		mi_ctrl |= RKISP1_CIF_MI_CTRL_BURST_LEN_CHROM_16;
+	else
+		mi_ctrl |= RKISP1_CIF_MI_CTRL_BURST_LEN_CHROM_64;
 
 	mi_ctrl |= RKISP1_CIF_MI_CTRL_INIT_BASE_EN |
 		   RKISP1_CIF_MI_CTRL_INIT_OFFSET_EN;
@@ -495,7 +514,11 @@ static void rkisp1_mp_config(struct rkisp1_capture *cap)
 	rkisp1_write(rkisp1, cap->config->mi.cr_size_init,
 		     rkisp1_pixfmt_comp_size(pixm, RKISP1_PLANE_CR));
 
-	if (rkisp1_has_feature(rkisp1, MAIN_STRIDE)) {
+	/*
+	 * Pico has Y_LLENGTH and the picture-size registers without the
+	 * ISP8000 MAIN_STRIDE feature.
+	 */
+	if (rkisp1_has_feature(rkisp1, MAIN_STRIDE) || rkisp1_is_pico(rkisp1)) {
 		rkisp1_write(rkisp1, RKISP1_CIF_MI_MP_Y_LLENGTH, cap->stride);
 		rkisp1_write(rkisp1, RKISP1_CIF_MI_MP_Y_PIC_WIDTH, pixm->width);
 		rkisp1_write(rkisp1, RKISP1_CIF_MI_MP_Y_PIC_HEIGHT, pixm->height);
@@ -520,14 +543,21 @@ static void rkisp1_mp_config(struct rkisp1_capture *cap)
 	 * NV12/NV21 and NV16/NV61, so instead use byte swap to support UYVY.
 	 * YVYU and VYUY cannot be supported with this method.
 	 */
-	if (rkisp1_has_feature(rkisp1, MAIN_STRIDE)) {
+	if (rkisp1_has_feature(rkisp1, MAIN_STRIDE) || rkisp1_is_pico(rkisp1)) {
 		reg = rkisp1_read(rkisp1, RKISP1_CIF_MI_OUTPUT_ALIGN_FORMAT);
 		if (cap->pix.cfg->yc_swap || cap->pix.cfg->byte_swap)
 			reg |= RKISP1_CIF_OUTPUT_ALIGN_FORMAT_MP_BYTE_SWAP_BYTES;
 		else
 			reg &= ~RKISP1_CIF_OUTPUT_ALIGN_FORMAT_MP_BYTE_SWAP_BYTES;
 
-		reg |= RKISP1_CIF_OUTPUT_ALIGN_FORMAT_MP_LSB_ALIGNMENT;
+		/*
+		 * Vendor non-raw output is MSB aligned. YUYV was captured
+		 * with the rkisp1 LSB default, so leave that path alone.
+		 */
+		if (cap->pix.cfg->fourcc == V4L2_PIX_FMT_YUV444M)
+			reg &= ~RKISP1_CIF_OUTPUT_ALIGN_FORMAT_MP_LSB_ALIGNMENT;
+		else
+			reg |= RKISP1_CIF_OUTPUT_ALIGN_FORMAT_MP_LSB_ALIGNMENT;
 		rkisp1_write(rkisp1, RKISP1_CIF_MI_OUTPUT_ALIGN_FORMAT, reg);
 
 		rkisp1_write(rkisp1, RKISP1_CIF_MI_INIT,
@@ -857,6 +887,26 @@ irqreturn_t rkisp1_capture_isr(int irq, void *ctx)
 		wake_up(&cap->done);
 	}
 
+	/*
+	 * Pico has no ISP frame-end for the 3A loop. Apply params and latch
+	 * stats when the main-path MI write completes.
+	 */
+	if (rkisp1_is_pico(rkisp1) &&
+	    (status & RKISP1_CIF_MI_FRAME(&rkisp1->capture_devs[RKISP1_MAINPATH]))) {
+		u32 isp_ris;
+
+		rkisp1_pico_isp_irq_frame(rkisp1);
+		isp_ris = rkisp1_read(rkisp1, RKISP1_CIF_ISP_RIS);
+
+		/*
+		 * 3A is latched on MI frame-end. Collect AE/AWB even if the
+		 * raw status bits have already been observed.
+		 */
+		isp_ris |= RKISP1_PICO_STATS_MEAS_MASK;
+		rkisp1_stats_isr(&rkisp1->stats, isp_ris);
+		rkisp1_params_isr(rkisp1);
+	}
+
 	return IRQ_HANDLED;
 }
 
@@ -1022,11 +1072,17 @@ static void rkisp1_cap_stream_enable(struct rkisp1_capture *cap)
 		 * On Rockchip platforms, the CIF_MI_INIT register is marked as
 		 * write-only and reads as zeros. We can skip reading it.
 		 */
-		if (rkisp1_has_feature(rkisp1, MAIN_STRIDE))
-			reg = rkisp1_read(rkisp1, RKISP1_CIF_MI_INIT)
-			    & RKISP1_CIF_MI_INIT_MP_OUTPUT_MASK;
-		else
+		if (rkisp1_has_feature(rkisp1, MAIN_STRIDE) ||
+		    rkisp1_is_pico(rkisp1)) {
+			/*
+			 * Keep the format programmed above. A readback of an
+			 * unimplemented code returns 0 and this update would
+			 * clear it.
+			 */
+			reg = cap->pix.cfg->output_format;
+		} else {
 			reg = 0;
+		}
 
 		reg |= RKISP1_CIF_MI_INIT_SOFT_UPD;
 		rkisp1_write(rkisp1, RKISP1_CIF_MI_INIT, reg);
@@ -1048,6 +1104,14 @@ static void rkisp1_cap_stream_disable(struct rkisp1_capture *cap)
 				 msecs_to_jiffies(1000));
 	if (!ret) {
 		cap->rkisp1->debug.stop_timeout[cap->id]++;
+		if (rkisp1_is_pico(cap->rkisp1))
+			dev_err(cap->rkisp1->dev,
+				"Pico MI stop timeout INIT %08x CTRL %08x BYTE %08x ISP_ERR %08x ISP_RIS %08x\n",
+				rkisp1_read(cap->rkisp1, RKISP1_CIF_MI_INIT),
+				rkisp1_read(cap->rkisp1, RKISP1_CIF_MI_CTRL),
+				rkisp1_read(cap->rkisp1, RKISP1_CIF_MI_BYTE_CNT),
+				rkisp1_read(cap->rkisp1, RKISP1_CIF_ISP_ERR),
+				rkisp1_read(cap->rkisp1, RKISP1_CIF_ISP_RIS));
 		cap->ops->stop(cap);
 		cap->is_stopping = false;
 		cap->is_streaming = false;
@@ -1120,12 +1184,13 @@ err_disable_cap:
 	return ret;
 }
 
+static void rkisp1_tpg_sink_link(struct rkisp1_device *rkisp1, bool enable);
+
 static void rkisp1_vb2_stop_streaming(struct vb2_queue *queue)
 {
 	struct rkisp1_capture *cap = queue->drv_priv;
 	struct rkisp1_vdev_node *node = &cap->vnode;
 	struct rkisp1_device *rkisp1 = cap->rkisp1;
-	int ret;
 
 	mutex_lock(&cap->rkisp1->stream_lock);
 
@@ -1134,15 +1199,61 @@ static void rkisp1_vb2_stop_streaming(struct vb2_queue *queue)
 	rkisp1_return_all_buffers(cap, VB2_BUF_STATE_ERROR);
 
 	v4l2_pipeline_pm_put(&node->vdev.entity);
-	ret = pm_runtime_put(rkisp1->dev);
-	if (ret < 0)
-		dev_err(rkisp1->dev, "power down failed error:%d\n", ret);
+	if (IS_ENABLED(CONFIG_PM)) {
+		int ret = pm_runtime_put(rkisp1->dev);
+
+		if (ret < 0)
+			dev_err(rkisp1->dev, "power down failed error:%d\n", ret);
+	}
 
 	rkisp1_dummy_buf_destroy(cap);
 
 	video_device_pipeline_stop(&node->vdev);
+	rkisp1_tpg_sink_link(rkisp1, true);
 
 	mutex_unlock(&cap->rkisp1->stream_lock);
+}
+
+/*
+ * The Pico test pattern is generated inside the ISP. The sensor, CSI-2 host
+ * and CPI stay in the media graph, and their boot formats do not match the
+ * ISP sink, so link validation returns -EPIPE before the TPG can start.
+ * Drop that link for the duration of the stream. The ISP sink pad is
+ * MUST_CONNECT; clear that too or pipeline start returns -ENOLINK.
+ */
+static void rkisp1_tpg_sink_link(struct rkisp1_device *rkisp1, bool enable)
+{
+	struct media_pad *pad = &rkisp1->isp.pads[RKISP1_ISP_PAD_SINK_VIDEO];
+	struct media_link *link;
+
+	if (!rkisp1->tpg)
+		return;
+
+	if (enable)
+		pad->flags |= MEDIA_PAD_FL_MUST_CONNECT;
+	else
+		pad->flags &= ~MEDIA_PAD_FL_MUST_CONNECT;
+
+	for_each_media_entity_data_link(pad->entity, link) {
+		u32 flags;
+
+		if (link->sink != pad)
+			continue;
+
+		flags = link->flags;
+		if (enable)
+			flags |= MEDIA_LNK_FL_ENABLED;
+		else
+			flags &= ~MEDIA_LNK_FL_ENABLED;
+
+		if (flags == link->flags)
+			continue;
+
+		if (media_entity_setup_link(link, flags))
+			dev_err(rkisp1->dev,
+				"TPG: failed to %s ISP sink link\n",
+				enable ? "restore" : "disable");
+	}
 }
 
 static int
@@ -1154,9 +1265,12 @@ rkisp1_vb2_start_streaming(struct vb2_queue *queue, unsigned int count)
 
 	mutex_lock(&cap->rkisp1->stream_lock);
 
+	rkisp1_tpg_sink_link(cap->rkisp1, false);
+
 	ret = video_device_pipeline_start(&cap->vnode.vdev, &cap->rkisp1->pipe);
 	if (ret) {
 		dev_err(cap->rkisp1->dev, "start pipeline failed %d\n", ret);
+		rkisp1_tpg_sink_link(cap->rkisp1, true);
 		goto err_ret_buffers;
 	}
 
@@ -1191,6 +1305,7 @@ err_destroy_dummy:
 	rkisp1_dummy_buf_destroy(cap);
 err_pipeline_stop:
 	video_device_pipeline_stop(&cap->vnode.vdev);
+	rkisp1_tpg_sink_link(cap->rkisp1, true);
 err_ret_buffers:
 	rkisp1_return_all_buffers(cap, VB2_BUF_STATE_QUEUED);
 	mutex_unlock(&cap->rkisp1->stream_lock);
@@ -1266,17 +1381,31 @@ rkisp1_fill_pixfmt(const struct rkisp1_capture *cap,
 	return info;
 }
 
+static bool
+rkisp1_capture_fmt_supported(const struct rkisp1_capture *cap,
+			     const struct rkisp1_capture_fmt_cfg *fmt)
+{
+	if (cap->id == RKISP1_MAINPATH &&
+	    fmt->fourcc == V4L2_PIX_FMT_YUV444M &&
+	    !rkisp1_is_pico(cap->rkisp1))
+		return false;
+
+	if (fmt->yc_swap && !rkisp1_has_feature(cap->rkisp1, MAIN_STRIDE))
+		return false;
+
+	return true;
+}
+
 static const struct rkisp1_capture_fmt_cfg *
 rkisp1_find_fmt_cfg(const struct rkisp1_capture *cap, const u32 pixelfmt)
 {
-	bool yc_swap_support = rkisp1_has_feature(cap->rkisp1, MAIN_STRIDE);
 	unsigned int i;
 
 	for (i = 0; i < cap->config->fmt_size; i++) {
 		const struct rkisp1_capture_fmt_cfg *fmt = &cap->config->fmts[i];
 
 		if (fmt->fourcc == pixelfmt &&
-		    (!fmt->yc_swap || yc_swap_support))
+		    rkisp1_capture_fmt_supported(cap, fmt))
 			return &cap->config->fmts[i];
 	}
 	return NULL;
@@ -1345,17 +1474,7 @@ static int rkisp1_enum_fmt_vid_cap_mplane(struct file *file, void *priv,
 {
 	struct rkisp1_capture *cap = video_drvdata(file);
 	const struct rkisp1_capture_fmt_cfg *fmt = NULL;
-	bool yc_swap_support = rkisp1_has_feature(cap->rkisp1, MAIN_STRIDE);
 	unsigned int i, n = 0;
-
-	if (f->index >= cap->config->fmt_size)
-		return -EINVAL;
-
-	if (!f->mbus_code && yc_swap_support) {
-		fmt = &cap->config->fmts[f->index];
-		f->pixelformat = fmt->fourcc;
-		return 0;
-	}
 
 	for (i = 0; i < cap->config->fmt_size; i++) {
 		fmt = &cap->config->fmts[i];
@@ -1363,7 +1482,7 @@ static int rkisp1_enum_fmt_vid_cap_mplane(struct file *file, void *priv,
 		if (f->mbus_code && fmt->mbus != f->mbus_code)
 			continue;
 
-		if (!yc_swap_support && fmt->yc_swap)
+		if (!rkisp1_capture_fmt_supported(cap, fmt))
 			continue;
 
 		if (n++ == f->index) {
@@ -1480,7 +1599,7 @@ static int rkisp1_capture_link_validate(struct media_link *link)
 	if (sd_fmt.format.height != cap->pix.fmt.height ||
 	    sd_fmt.format.width != cap->pix.fmt.width ||
 	    sd_fmt.format.code != fmt->mbus) {
-		dev_dbg(cap->rkisp1->dev,
+		dev_err(cap->rkisp1->dev,
 			"link '%s':%u -> '%s':%u not valid: 0x%04x/%ux%u != 0x%04x/%ux%u\n",
 			link->source->entity->name, link->source->index,
 			link->sink->entity->name, link->sink->index,

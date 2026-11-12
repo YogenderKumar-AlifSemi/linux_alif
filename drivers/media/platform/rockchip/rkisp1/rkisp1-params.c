@@ -107,6 +107,25 @@ rkisp1_param_clear_bits(struct rkisp1_params *params, u32 reg, u32 bit_mask)
 	rkisp1_write(params->rkisp1, reg, val & ~bit_mask);
 }
 
+/* Pico AWB lives in bit 6. Bit 7 is binning and must stay clear. */
+static u32 rkisp1_awb_ctrl_mask(const struct rkisp1_params *params)
+{
+	if (rkisp1_is_pico(params->rkisp1))
+		return RKISP1_CIF_ISP_CTRL_PICO_AWB_ENA;
+
+	return RKISP1_CIF_ISP_CTRL_ISP_AWB_ENA;
+}
+
+static u32 rkisp1_awb_gain_ena_mask(const struct rkisp1_params *params)
+{
+	u32 mask = rkisp1_awb_ctrl_mask(params);
+
+	if (rkisp1_is_pico(params->rkisp1))
+		mask |= RKISP1_CIF_ISP_CTRL_ISP_DG_ENA;
+
+	return mask;
+}
+
 /* ISP BP interface function */
 static void rkisp1_dpcc_config(struct rkisp1_params *params,
 			       const struct rkisp1_cif_isp_dpcc_config *arg)
@@ -166,8 +185,8 @@ static void rkisp1_bls_config(struct rkisp1_params *params,
 
 	new_control = rkisp1_read(params->rkisp1, RKISP1_CIF_ISP_BLS_CTRL);
 	new_control &= RKISP1_CIF_ISP_BLS_ENA;
-	/* fixed subtraction values */
-	if (!arg->enable_auto) {
+	/* Pico has fixed subtraction only; ignore measured-window mode. */
+	if (!arg->enable_auto || rkisp1_is_pico(params->rkisp1)) {
 		static const u32 regs[] = {
 			RKISP1_CIF_ISP_BLS_A_FIXED,
 			RKISP1_CIF_ISP_BLS_B_FIXED,
@@ -635,12 +654,12 @@ rkisp1_awb_meas_enable_v10(struct rkisp1_params *params,
 
 		/* Measurements require AWB block be active. */
 		rkisp1_param_set_bits(params, RKISP1_CIF_ISP_CTRL,
-				      RKISP1_CIF_ISP_CTRL_ISP_AWB_ENA);
+				      rkisp1_awb_ctrl_mask(params));
 	} else {
 		rkisp1_write(params->rkisp1, RKISP1_CIF_ISP_AWB_PROP_V10,
 			     reg_val);
 		rkisp1_param_clear_bits(params, RKISP1_CIF_ISP_CTRL,
-					RKISP1_CIF_ISP_CTRL_ISP_AWB_ENA);
+					rkisp1_awb_ctrl_mask(params));
 	}
 }
 
@@ -678,6 +697,21 @@ static void
 rkisp1_awb_gain_config_v10(struct rkisp1_params *params,
 			   const struct rkisp1_cif_isp_awb_gain_config *arg)
 {
+	/*
+	 * Pico maps these writes onto ISP_DGAIN_G / ISP_DGAIN_RB. Those
+	 * fields are 16 bits. The V10 AWB helper keeps 10 bits in the
+	 * high half, which clips red and green-red just under 4x.
+	 */
+	if (rkisp1_is_pico(params->rkisp1)) {
+		rkisp1_write(params->rkisp1, RKISP1_CIF_ISP_AWB_GAIN_G_V10,
+			     RKISP1_PICO_ISP_DGAIN_HI(arg->gain_green_r) |
+			     RKISP1_PICO_ISP_DGAIN_LO(arg->gain_green_b));
+		rkisp1_write(params->rkisp1, RKISP1_CIF_ISP_AWB_GAIN_RB_V10,
+			     RKISP1_PICO_ISP_DGAIN_HI(arg->gain_red) |
+			     RKISP1_PICO_ISP_DGAIN_LO(arg->gain_blue));
+		return;
+	}
+
 	rkisp1_write(params->rkisp1, RKISP1_CIF_ISP_AWB_GAIN_G_V10,
 		     RKISP1_CIF_ISP_AWB_GAIN_R_SET(arg->gain_green_r) |
 		     arg->gain_green_b);
@@ -1364,6 +1398,12 @@ rkisp1_isp_isr_other_config(struct rkisp1_params *params,
 		module_ens &= ~RKISP1_CIF_ISP_MODULE_BLS;
 	}
 
+	if (rkisp1_is_pico(params->rkisp1)) {
+		module_en_update &= RKISP1_PICO_PARAMS_MODULES;
+		module_cfg_update &= RKISP1_PICO_PARAMS_MODULES;
+		module_ens &= RKISP1_PICO_PARAMS_MODULES;
+	}
+
 	/* update dpc config */
 	if (module_cfg_update & RKISP1_CIF_ISP_MODULE_DPCC)
 		rkisp1_dpcc_config(params,
@@ -1420,11 +1460,11 @@ rkisp1_isp_isr_other_config(struct rkisp1_params *params,
 		if (module_ens & RKISP1_CIF_ISP_MODULE_AWB_GAIN)
 			rkisp1_param_set_bits(params,
 					      RKISP1_CIF_ISP_CTRL,
-					      RKISP1_CIF_ISP_CTRL_ISP_AWB_ENA);
+					      rkisp1_awb_gain_ena_mask(params));
 		else
 			rkisp1_param_clear_bits(params,
 						RKISP1_CIF_ISP_CTRL,
-						RKISP1_CIF_ISP_CTRL_ISP_AWB_ENA);
+						rkisp1_awb_gain_ena_mask(params));
 	}
 
 	/* update bdm config */
@@ -1563,6 +1603,12 @@ static void rkisp1_isp_isr_meas_config(struct rkisp1_params *params,
 	module_en_update = new_params->module_en_update;
 	module_cfg_update = new_params->module_cfg_update;
 	module_ens = new_params->module_ens;
+
+	if (rkisp1_is_pico(params->rkisp1)) {
+		module_en_update &= RKISP1_PICO_PARAMS_MODULES;
+		module_cfg_update &= RKISP1_PICO_PARAMS_MODULES;
+		module_ens &= RKISP1_PICO_PARAMS_MODULES;
+	}
 
 	/* update awb config */
 	if (module_cfg_update & RKISP1_CIF_ISP_MODULE_AWB)
@@ -1708,7 +1754,7 @@ rkisp1_ext_params_awbg(struct rkisp1_params *params,
 
 	if (awbg->header.flags & RKISP1_EXT_PARAMS_FL_BLOCK_DISABLE) {
 		rkisp1_param_clear_bits(params, RKISP1_CIF_ISP_CTRL,
-					RKISP1_CIF_ISP_CTRL_ISP_AWB_ENA);
+					rkisp1_awb_gain_ena_mask(params));
 		return;
 	}
 
@@ -1717,7 +1763,7 @@ rkisp1_ext_params_awbg(struct rkisp1_params *params,
 	if ((awbg->header.flags & RKISP1_EXT_PARAMS_FL_BLOCK_ENABLE) &&
 	    !(params->enabled_blocks & BIT(awbg->header.type)))
 		rkisp1_param_set_bits(params, RKISP1_CIF_ISP_CTRL,
-				      RKISP1_CIF_ISP_CTRL_ISP_AWB_ENA);
+				      rkisp1_awb_gain_ena_mask(params));
 }
 
 static void
@@ -2120,6 +2166,27 @@ static const struct rkisp1_ext_params_handler {
 	},
 };
 
+static bool rkisp1_ext_params_block_ok(const struct rkisp1_params *params,
+				       u32 type)
+{
+	if (!rkisp1_is_pico(params->rkisp1))
+		return true;
+
+	switch (type) {
+	case RKISP1_EXT_PARAMS_BLOCK_TYPE_BLS:
+	case RKISP1_EXT_PARAMS_BLOCK_TYPE_AWB_GAIN:
+	case RKISP1_EXT_PARAMS_BLOCK_TYPE_FLT:
+	case RKISP1_EXT_PARAMS_BLOCK_TYPE_BDM:
+	case RKISP1_EXT_PARAMS_BLOCK_TYPE_CTK:
+	case RKISP1_EXT_PARAMS_BLOCK_TYPE_GOC:
+	case RKISP1_EXT_PARAMS_BLOCK_TYPE_AWB_MEAS:
+	case RKISP1_EXT_PARAMS_BLOCK_TYPE_AEC_MEAS:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static void rkisp1_ext_params_config(struct rkisp1_params *params,
 				     struct rkisp1_ext_params_cfg *cfg,
 				     u32 block_group_mask)
@@ -2148,6 +2215,9 @@ static void rkisp1_ext_params_config(struct rkisp1_params *params,
 
 		if ((params->rkisp1->info->features & block_handler->features) !=
 		    block_handler->features)
+			continue;
+
+		if (!rkisp1_ext_params_block_ok(params, block->header.type))
 			continue;
 
 		block_handler->handler(params, block);
@@ -2183,7 +2253,8 @@ void rkisp1_params_isr(struct rkisp1_device *rkisp1)
 
 	if (params->metafmt->dataformat == V4L2_META_FMT_RK_ISP1_PARAMS) {
 		rkisp1_isp_isr_other_config(params, cur_buf->cfg);
-		rkisp1_isp_isr_lsc_config(params, cur_buf->cfg);
+		if (!rkisp1_is_pico(rkisp1))
+			rkisp1_isp_isr_lsc_config(params, cur_buf->cfg);
 		rkisp1_isp_isr_meas_config(params, cur_buf->cfg);
 	} else {
 		rkisp1_ext_params_config(params, cur_buf->cfg,
@@ -2261,6 +2332,48 @@ void rkisp1_params_pre_configure(struct rkisp1_params *params,
 	params->ycbcr_encoding = ycbcr_encoding;
 	params->raw_type = bayer_pat;
 
+	if (rkisp1_is_pico(params->rkisp1)) {
+		static const struct rkisp1_cif_isp_awb_gain_config gains = {
+			.gain_red = 0x100,
+			.gain_green_r = 0x100,
+			.gain_blue = 0x100,
+			.gain_green_b = 0x100,
+		};
+		struct rkisp1_cif_isp_awb_meas_config awb =
+			rkisp1_awb_params_default_config;
+		struct rkisp1_cif_isp_aec_config aec =
+			rkisp1_aec_params_default_config;
+		u32 width, height;
+
+		width = rkisp1_read(params->rkisp1, RKISP1_CIF_ISP_OUT_H_SIZE);
+		height = rkisp1_read(params->rkisp1, RKISP1_CIF_ISP_OUT_V_SIZE);
+		if (width && height) {
+			awb.awb_wnd.h_offs = 0;
+			awb.awb_wnd.v_offs = 0;
+			awb.awb_wnd.h_size = width;
+			awb.awb_wnd.v_size = height;
+			aec.meas_window.h_offs = width >> 2;
+			aec.meas_window.v_offs = height >> 2;
+			aec.meas_window.h_size = width >> 1;
+			aec.meas_window.v_size = height >> 1;
+		}
+
+		params->ops->awb_meas_config(params, &awb);
+		params->ops->awb_meas_enable(params, &awb, true);
+		params->ops->awb_gain_config(params, &gains);
+		rkisp1_param_set_bits(params, RKISP1_CIF_ISP_CTRL,
+				      rkisp1_awb_gain_ena_mask(params));
+
+		params->ops->aec_config(params, &aec);
+		rkisp1_param_set_bits(params, RKISP1_CIF_ISP_EXP_CTRL,
+				      RKISP1_CIF_ISP_EXP_ENA);
+
+		/* Identity CCM; demosaic stays enabled (not bypassed). */
+		rkisp1_ctk_enable(params, false);
+		rkisp1_csm_config(params);
+		goto apply_first_buf;
+	}
+
 	params->ops->awb_meas_config(params, &rkisp1_awb_params_default_config);
 	params->ops->awb_meas_enable(params, &rkisp1_awb_params_default_config,
 				     true);
@@ -2280,6 +2393,7 @@ void rkisp1_params_pre_configure(struct rkisp1_params *params,
 
 	rkisp1_csm_config(params);
 
+apply_first_buf:
 	spin_lock_irq(&params->config_lock);
 
 	/* apply the first buffer if there is one already */
@@ -2324,11 +2438,13 @@ void rkisp1_params_post_configure(struct rkisp1_params *params)
 	if (!cur_buf)
 		goto unlock;
 
-	if (params->metafmt->dataformat == V4L2_META_FMT_RK_ISP1_PARAMS)
-		rkisp1_isp_isr_lsc_config(params, cur_buf->cfg);
-	else
-		rkisp1_ext_params_config(params, cur_buf->cfg,
-					 RKISP1_EXT_PARAMS_BLOCK_GROUP_LSC);
+	if (!rkisp1_is_pico(params->rkisp1)) {
+		if (params->metafmt->dataformat == V4L2_META_FMT_RK_ISP1_PARAMS)
+			rkisp1_isp_isr_lsc_config(params, cur_buf->cfg);
+		else
+			rkisp1_ext_params_config(params, cur_buf->cfg,
+						 RKISP1_EXT_PARAMS_BLOCK_GROUP_LSC);
+	}
 
 	/* update shadow register immediately */
 	rkisp1_param_set_bits(params, RKISP1_CIF_ISP_CTRL,
@@ -2362,7 +2478,11 @@ void rkisp1_params_disable(struct rkisp1_params *params)
 				RKISP1_CIF_ISP_FLT_ENA);
 	params->ops->awb_meas_enable(params, NULL, false);
 	rkisp1_param_clear_bits(params, RKISP1_CIF_ISP_CTRL,
-				RKISP1_CIF_ISP_CTRL_ISP_AWB_ENA);
+				rkisp1_awb_ctrl_mask(params));
+	if (rkisp1_is_pico(params->rkisp1))
+		rkisp1_param_clear_bits(params, RKISP1_CIF_ISP_CTRL,
+					RKISP1_CIF_ISP_CTRL_ISP_DG_ENA |
+					RKISP1_CIF_ISP_CTRL_PICO_BINNING_EN);
 	rkisp1_param_clear_bits(params, RKISP1_CIF_ISP_EXP_CTRL,
 				RKISP1_CIF_ISP_EXP_ENA);
 	rkisp1_ctk_enable(params, false);
