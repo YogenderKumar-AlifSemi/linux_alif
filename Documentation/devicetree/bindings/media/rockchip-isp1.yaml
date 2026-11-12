@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/media/rockchip-isp1.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Rockchip SoC Image Signal Processing unit v1
+title: Rockchip / VeriSilicon Image Signal Processing unit v1
 
 maintainers:
   - Helen Koike <helen.koike@collabora.com>
@@ -12,10 +12,13 @@ maintainers:
 description: |
   Rockchip ISP1 is the Camera interface for the Rockchip series of SoCs
   which contains image processing, scaling, and compression functions.
+  The same driver also covers VeriSilicon ISP8000-family cuts such as
+  ISP8000Pico on Alif Ensemble (parallel input from CPI, no internal CSI-2).
 
 properties:
   compatible:
     enum:
+      - alif,ensemble-isp-pico
       - fsl,imx8mp-isp
       - rockchip,px30-cif-isp
       - rockchip,rk3399-cif-isp
@@ -28,13 +31,15 @@ properties:
     maxItems: 3
 
   interrupt-names:
+    # Pico has isp and mi only. Other compatibles require all three names.
+    minItems: 2
     items:
       - const: isp
       - const: mi
       - const: mipi
 
   clocks:
-    minItems: 3
+    minItems: 1
     items:
       # isp0 and isp1
       - description: ISP clock (for imx8mp, clk)
@@ -44,7 +49,7 @@ properties:
       - description: ISP Pixel clock
 
   clock-names:
-    minItems: 3
+    minItems: 1
     items:
       # isp0 and isp1
       - const: isp
@@ -62,6 +67,13 @@ properties:
 
   iommus:
     maxItems: 1
+
+  memory-region:
+    maxItems: 1
+    description:
+      Reserved DMA pool for MI (Memory Interface) writes. On Ensemble this is
+      a pool in the HEXSPI0 external memory window and is separate from the
+      CPI SRAM pool.
 
   phys:
     maxItems: 1
@@ -105,6 +117,8 @@ properties:
             properties:
               bus-type:
                 enum: [5, 6]
+              bus-width:
+                enum: [8, 10, 12]
 
             required:
               - bus-type
@@ -121,10 +135,22 @@ required:
   - interrupts
   - clocks
   - clock-names
-  - power-domains
   - ports
 
 allOf:
+  - if:
+      not:
+        properties:
+          compatible:
+            contains:
+              const: alif,ensemble-isp-pico
+    then:
+      properties:
+        interrupt-names:
+          minItems: 3
+      required:
+        - power-domains
+
   - if:
       properties:
         compatible:
@@ -145,6 +171,11 @@ allOf:
           contains:
             const: rockchip,px30-cif-isp
     then:
+      properties:
+        clocks:
+          minItems: 3
+        clock-names:
+          minItems: 3
       required:
         - interrupt-names
 
@@ -155,18 +186,62 @@ allOf:
             const: fsl,imx8mp-isp
     then:
       properties:
+        clocks:
+          minItems: 3
+          maxItems: 3
+        clock-names:
+          minItems: 3
+          maxItems: 3
         iommus: false
         phys: false
         phy-names: false
       required:
         - fsl,blk-ctrl
-    else:
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            enum:
+              - rockchip,px30-cif-isp
+              - rockchip,rk3399-cif-isp
+    then:
       properties:
         fsl,blk-ctrl: false
       required:
         - iommus
         - phys
         - phy-names
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: alif,ensemble-isp-pico
+    then:
+      properties:
+        interrupts:
+          minItems: 2
+          maxItems: 2
+        interrupt-names:
+          maxItems: 2
+          items:
+            - const: isp
+            - const: mi
+        clocks:
+          maxItems: 1
+        clock-names:
+          maxItems: 1
+          items:
+            - const: isp
+        iommus: false
+        phys: false
+        phy-names: false
+        fsl,blk-ctrl: false
+        power-domains: false
+      required:
+        - interrupt-names
+        - memory-region
 
 additionalProperties: false
 
@@ -314,6 +389,35 @@ examples:
                         remote-endpoint = <&mipi_in_ucam1>;
                         data-lanes = <1 2>;
                     };
+                };
+            };
+        };
+    };
+
+  - |
+    #include <dt-bindings/clock/alif,ensemble-clock.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/media/video-interfaces.h>
+
+    isp: isp@49046000 {
+        compatible = "alif,ensemble-isp-pico";
+        reg = <0x49046000 0x2000>;
+        interrupts = <GIC_SPI 356 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 357 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "isp", "mi";
+        clocks = <&psclks ENSEMBLE_ISP_CLK>;
+        clock-names = "isp";
+        memory-region = <&isp_buf>;
+
+        ports {
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            port@1 {
+                reg = <1>;
+                isp_in: endpoint {
+                    remote-endpoint = <&cpi_isp_out>;
+                    bus-type = <MEDIA_BUS_TYPE_PARALLEL>;
                 };
             };
         };
