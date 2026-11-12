@@ -56,6 +56,15 @@
 #define ARX3A0_REG_RESET_INIT			BIT(0)
 
 #define ARX3A0_REG_GLOBAL_GAIN			0x305E
+#define ARX3A0_REG_ANALOG_GAIN			0x3028
+#define ARX3A0_ANA_GAIN_MIN			2	/* 1.0x recommended */
+#define ARX3A0_ANA_GAIN_MAX			16	/* 8.0x recommended */
+#define ARX3A0_ANA_GAIN_STEP			1
+#define ARX3A0_ANA_GAIN_DEFAULT			4	/* 2.0x reset value */
+/* RAW10 init table R0x3012. A CPI dump leaves this value in place. */
+#define ARX3A0_EXPOSURE_LINES			0x366A
+/* RAW10 init table R0x0340 minus one. Longer values do not integrate. */
+#define ARX3A0_EXPOSURE_MAX			0xA47A
 #define ARX3A0_REG_PEDESTAL			0x301E
 #define ARX3A0_PEDESTAL_10BIT			0x002A
 
@@ -543,6 +552,7 @@ struct arx3a0_ctrls {
 	};
 	struct v4l2_ctrl *pixrate;
 	struct v4l2_ctrl *exposure;
+	struct v4l2_ctrl *analogue_gain;
 	struct v4l2_ctrl *test_pattern;
 };
 
@@ -594,6 +604,9 @@ static u32 div64_round_up(u64 v, u32 d)
 }
 
 static void arx3a0_dump_mipi_debug(struct arx3a0_dev *sensor, const char *tag);
+static int arx3a0_sync_frame_length(struct arx3a0_dev *sensor);
+static int arx3a0_apply_exposure(struct arx3a0_dev *sensor, u32 lines);
+static void arx3a0_limit_exposure_ctrl(struct arx3a0_dev *sensor);
 
 /* Data must be BE16, the first value is the register address */
 static int arx3a0_read_reg(struct arx3a0_dev *sensor, u16 addr, u16 *val)
@@ -858,6 +871,8 @@ static int arx3a0_set_fmt(struct v4l2_subdev *sd,
 		    sensor->fmt.height != format->format.height) {
 			sensor->fmt = format->format;
 			ret = arx3a0_set_initial_regs(sensor);
+			if (!ret)
+				arx3a0_sync_frame_length(sensor);
 		}
 		arx3a0_calc_mode(sensor);
 	}
@@ -900,6 +915,50 @@ static void arx3a0_dump_mipi_debug(struct arx3a0_dev *sensor, const char *tag)
 	}
 }
 
+static u16 arx3a0_max_coarse_integration(const struct arx3a0_dev *sensor)
+{
+	if (sensor->total_height > 1)
+		return sensor->total_height - 1;
+	return 1;
+}
+
+static int arx3a0_sync_frame_length(struct arx3a0_dev *sensor)
+{
+	u16 fl;
+	int ret;
+
+	ret = arx3a0_read_reg(sensor, ARX3A0_REG_FRAME_LENGTH_LINES, &fl);
+	if (ret)
+		return ret;
+	if (fl > 1)
+		sensor->total_height = fl;
+	return 0;
+}
+
+static int arx3a0_apply_exposure(struct arx3a0_dev *sensor, u32 lines)
+{
+	u16 max_exp = arx3a0_max_coarse_integration(sensor);
+
+	if (lines < 1)
+		lines = 1;
+	if (lines > max_exp)
+		lines = max_exp;
+	return arx3a0_write_reg(sensor, ARX3A0_REG_COARSE_INTEGRATION_TIME,
+				lines);
+}
+
+static void arx3a0_limit_exposure_ctrl(struct arx3a0_dev *sensor)
+{
+	u16 max_exp = arx3a0_max_coarse_integration(sensor);
+	s32 def = ARX3A0_EXPOSURE_LINES;
+
+	if (!sensor->ctrls.exposure)
+		return;
+	if (def > max_exp)
+		def = max_exp;
+	__v4l2_ctrl_modify_range(sensor->ctrls.exposure, 1, max_exp, 1, def);
+}
+
 static int arx3a0_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct v4l2_subdev *sd = ctrl_to_sd(ctrl);
@@ -917,11 +976,15 @@ static int arx3a0_s_ctrl(struct v4l2_ctrl *ctrl)
 			sensor->ctrls.vblank->val;
 
 		ret = arx3a0_set_geometry(sensor);
+		if (!ret)
+			arx3a0_limit_exposure_ctrl(sensor);
+		break;
+	case V4L2_CID_ANALOGUE_GAIN:
+		ret = arx3a0_write_reg(sensor, ARX3A0_REG_ANALOG_GAIN,
+				       ctrl->val);
 		break;
 	case V4L2_CID_EXPOSURE:
-		ret = arx3a0_write_reg(sensor,
-				       ARX3A0_REG_COARSE_INTEGRATION_TIME,
-				       ctrl->val);
+		ret = arx3a0_apply_exposure(sensor, ctrl->val);
 		break;
 	case V4L2_CID_TEST_PATTERN:
 		ret = arx3a0_write_reg(sensor, ARX3A0_REG_TEST_PATTERN_MODE,
@@ -959,7 +1022,18 @@ static int arx3a0_init_controls(struct arx3a0_dev *sensor)
 	/* We can use our own mutex for the ctrl lock */
 	hdl->lock = &sensor->lock;
 
-	/* Manual gain */
+	/*
+	 * Analog gain is R0x3028 (AND9784 Table 4): 0.5x steps,
+	 * legal codes 0-32. ARX3A0-D / AND9861 recommend 1.0x-8x,
+	 * which is codes 2-16. Code N is N * 0.5x.
+	 * R0x305E is the combined global/digital gain register.
+	 */
+	ctrls->analogue_gain = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_ANALOGUE_GAIN,
+						 ARX3A0_ANA_GAIN_MIN,
+						 ARX3A0_ANA_GAIN_MAX,
+						 ARX3A0_ANA_GAIN_STEP,
+						 ARX3A0_ANA_GAIN_DEFAULT);
+
 	ctrls->hblank = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_HBLANK,
 					  ARX3A0_WIDTH_BLANKING_MIN, 4094, 1,
 					  ARX3A0_WIDTH_BLANKING_MIN);
@@ -975,8 +1049,9 @@ static int arx3a0_init_controls(struct arx3a0_dev *sensor)
 					   ARX3A0_PIXEL_CLOCK_RATE);
 
 	/* Manual exposure time */
-	ctrls->exposure = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_EXPOSURE, 0,
-					    65535, 1, 360);
+	ctrls->exposure = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_EXPOSURE, 1,
+					    ARX3A0_EXPOSURE_MAX, 1,
+					    ARX3A0_EXPOSURE_LINES);
 
 	link_freq = v4l2_ctrl_new_int_menu(hdl, ops, V4L2_CID_LINK_FREQ,
 					   ARRAY_SIZE(arx3a0_link_frequencies) - 1,
@@ -1092,6 +1167,8 @@ static int arx3a0_power_on(struct device *dev)
 	ret = arx3a0_set_initial_regs(sensor);
 	if (ret)
 		dev_warn(dev, "set_initial_regs failed, continuing anyway\n");
+	else
+		arx3a0_sync_frame_length(sensor);
 
 	arx3a0_write_reg8(sensor, ARX3A0_MODE_SELECT_REGISTER, 0x00);
 	usleep_range(10000, 11000);
@@ -1160,6 +1237,30 @@ static int arx3a0_enum_mbus_code(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static int arx3a0_enum_frame_size(struct v4l2_subdev *sd,
+				  struct v4l2_subdev_state *state,
+				  struct v4l2_subdev_frame_size_enum *fse)
+{
+	unsigned int i;
+
+	if (fse->index > 0)
+		return -EINVAL;
+
+	for (i = 0; i < ARRAY_SIZE(supported_codes); i++) {
+		if (fse->code == supported_codes[i])
+			break;
+	}
+	if (i == ARRAY_SIZE(supported_codes))
+		return -EINVAL;
+
+	fse->min_width = ARX3A0_WIDTH_MIN;
+	fse->max_width = ARX3A0_WIDTH_MAX;
+	fse->min_height = ARX3A0_HEIGHT_MIN;
+	fse->max_height = ARX3A0_HEIGHT_MAX;
+
+	return 0;
+}
+
 static int arx3a0_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct arx3a0_dev *sensor = to_arx3a0_dev(sd);
@@ -1173,6 +1274,30 @@ static int arx3a0_s_stream(struct v4l2_subdev *sd, int enable)
 
 	if (enable)
 		arx3a0_dump_mipi_debug(sensor, "pre-stream");
+
+	if (enable) {
+		/*
+		 * A previous cam run leaves a short coarse integration in
+		 * the sensor. Put back the CPI init-table exposure and
+		 * gain before the first frame starts integrating, and
+		 * make the control cache match so the IPA does not treat
+		 * the short value as the current exposure.
+		 */
+		arx3a0_sync_frame_length(sensor);
+		arx3a0_limit_exposure_ctrl(sensor);
+		if (sensor->ctrls.exposure) {
+			sensor->ctrls.exposure->val = ARX3A0_EXPOSURE_LINES;
+			sensor->ctrls.exposure->cur.val = ARX3A0_EXPOSURE_LINES;
+		}
+		if (sensor->ctrls.analogue_gain) {
+			sensor->ctrls.analogue_gain->val = ARX3A0_ANA_GAIN_DEFAULT;
+			sensor->ctrls.analogue_gain->cur.val =
+				ARX3A0_ANA_GAIN_DEFAULT;
+		}
+		arx3a0_apply_exposure(sensor, ARX3A0_EXPOSURE_LINES);
+		arx3a0_write_reg(sensor, ARX3A0_REG_ANALOG_GAIN,
+				 ARX3A0_ANA_GAIN_DEFAULT);
+	}
 
 	dev_dbg(dev, "writing MODE_SELECT = 0x%02x\n",
 		enable ? 0x01 : 0x00);
@@ -1209,6 +1334,7 @@ static const struct v4l2_subdev_video_ops arx3a0_video_ops = {
 
 static const struct v4l2_subdev_pad_ops arx3a0_pad_ops = {
 	.enum_mbus_code = arx3a0_enum_mbus_code,
+	.enum_frame_size = arx3a0_enum_frame_size,
 	.get_fmt = arx3a0_get_fmt,
 	.set_fmt = arx3a0_set_fmt,
 };
