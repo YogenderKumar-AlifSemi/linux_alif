@@ -33,6 +33,9 @@
 #define DW_SPI_CAP_CS_OVERRIDE		BIT(0)
 #define DW_SPI_CAP_DFS32		BIT(1)
 
+/* SoC / IP integration quirks */
+#define DW_SPI_QUIRK_DISABLE_SSI_BEFORE_DMACR	BIT(3)
+
 /* Register offsets (Generic for both DWC APB SSI and DWC SSI IP-cores) */
 #define DW_SPI_CTRLR0			0x00
 #define DW_SPI_CTRLR1			0x04
@@ -154,6 +157,7 @@ struct dw_spi {
 	u32			ip;		/* Synopsys DW SSI IP-core ID */
 	u32			ver;		/* Synopsys component version */
 	u32			caps;		/* DW SPI capabilities */
+	unsigned long		quirk_flags;
 
 	void __iomem		*regs;
 	unsigned long		paddr;

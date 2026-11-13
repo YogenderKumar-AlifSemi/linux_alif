@@ -408,6 +408,38 @@ static int dw_spi_dma_wait_rx_done(struct dw_spi *dws)
 }
 
 /*
+ * DMACR must be written with the DW APB SSI controller disabled
+ * (SSIENR = 0), as writing it while enabled may cause an imprecise
+ * external abort (0x1c06). Drain the FIFO before disabling SSIENR.
+ */
+static int dw_spi_dma_clear_dmacr(struct dw_spi *dws, struct spi_transfer *xfer)
+{
+	int ret;
+
+	if (dws->quirk_flags & DW_SPI_QUIRK_DISABLE_SSI_BEFORE_DMACR) {
+		ret = 0;
+
+		if (dws->host->cur_msg &&
+		    dws->host->cur_msg->status == -EINPROGRESS) {
+			ret = dw_spi_dma_wait_tx_done(dws, xfer);
+			if (!ret && xfer->rx_buf &&
+			    dws->host->cur_msg->status == -EINPROGRESS)
+				ret = dw_spi_dma_wait_rx_done(dws);
+		}
+
+		dw_spi_enable_chip(dws, 0);
+		dw_writel(dws, DW_SPI_DMACR, 0);
+		dw_spi_enable_chip(dws, 1);
+
+		return ret;
+	}
+
+	dw_writel(dws, DW_SPI_DMACR, 0);
+
+	return 0;
+}
+
+/*
  * dws->dma_chan_busy is set before the dma transfer starts, callback for rx
  * channel will clear a corresponding bit.
  */
@@ -506,7 +538,7 @@ static int dw_spi_dma_setup(struct dw_spi *dws, struct spi_transfer *xfer)
 static int dw_spi_dma_transfer_all(struct dw_spi *dws,
 				   struct spi_transfer *xfer)
 {
-	int ret;
+	int ret, clear_ret;
 
 	/* Submit the DMA Tx transfer */
 	ret = dw_spi_dma_submit_tx(dws, xfer->tx_sg.sgl, xfer->tx_sg.nents);
@@ -529,7 +561,9 @@ static int dw_spi_dma_transfer_all(struct dw_spi *dws,
 	ret = dw_spi_dma_wait(dws, xfer->len, xfer->effective_speed_hz);
 
 err_clear_dmac:
-	dw_writel(dws, DW_SPI_DMACR, 0);
+	clear_ret = dw_spi_dma_clear_dmacr(dws, xfer);
+	if (!ret)
+		ret = clear_ret;
 
 	return ret;
 }
@@ -572,7 +606,7 @@ static int dw_spi_dma_transfer_one(struct dw_spi *dws,
 	struct scatterlist *tx_sg = NULL, *rx_sg = NULL, tx_tmp, rx_tmp;
 	unsigned int tx_len = 0, rx_len = 0;
 	unsigned int base, len;
-	int ret;
+	int ret, clear_ret;
 
 	sg_init_table(&tx_tmp, 1);
 	sg_init_table(&rx_tmp, 1);
@@ -630,7 +664,9 @@ static int dw_spi_dma_transfer_one(struct dw_spi *dws,
 		rx_len -= len;
 	}
 
-	dw_writel(dws, DW_SPI_DMACR, 0);
+	clear_ret = dw_spi_dma_clear_dmacr(dws, xfer);
+	if (!ret)
+		ret = clear_ret;
 
 	return ret;
 }
@@ -654,6 +690,10 @@ static int dw_spi_dma_transfer(struct dw_spi *dws, struct spi_transfer *xfer)
 	else
 		ret = dw_spi_dma_transfer_one(dws, xfer);
 	if (ret)
+		return ret;
+
+	/* FIFO drain already done in dw_spi_dma_clear_dmacr() with the quirk. */
+	if (dws->quirk_flags & DW_SPI_QUIRK_DISABLE_SSI_BEFORE_DMACR)
 		return ret;
 
 	if (dws->host->cur_msg->status == -EINPROGRESS) {

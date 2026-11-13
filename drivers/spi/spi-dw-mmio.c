@@ -210,6 +210,18 @@ static int dw_spi_alpine_init(struct platform_device *pdev,
 	return 0;
 }
 
+static int dw_spi_ensemble_init(struct platform_device *pdev,
+				struct dw_spi_mmio *dwsmmio)
+{
+	struct dw_spi *dws = &dwsmmio->dws;
+
+	dws->ip = DW_HSSI_ID;
+	dws->quirk_flags |= DW_SPI_QUIRK_DISABLE_SSI_BEFORE_DMACR;
+	dw_spi_dma_setup_generic(dws);
+
+	return 0;
+}
+
 static int dw_spi_pssi_init(struct platform_device *pdev,
 			    struct dw_spi_mmio *dwsmmio)
 {
@@ -405,6 +417,7 @@ static const struct of_device_id dw_spi_mmio_of_match[] = {
 	{ .compatible = "mscc,jaguar2-spi", .data = dw_spi_mscc_jaguar2_init},
 	{ .compatible = "amazon,alpine-dw-apb-ssi", .data = dw_spi_alpine_init},
 	{ .compatible = "renesas,rzn1-spi", .data = dw_spi_pssi_init},
+	{ .compatible = "alif,ensemble-spi", .data = dw_spi_ensemble_init},
 	{ .compatible = "snps,dwc-ssi-1.01a", .data = dw_spi_hssi_init},
 	{ .compatible = "intel,keembay-ssi", .data = dw_spi_intel_init},
 	{
