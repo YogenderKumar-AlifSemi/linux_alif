@@ -97,6 +97,15 @@ static const struct plat_csi_fmt cpi_formats[] = {
 		.depth = 8,
 		.mbus_code = MEDIA_BUS_FMT_SBGGR8_1X8,
 	}, {
+		/*
+		 * 8-bit parallel Bayer raw (SGRBG); maps
+		 * MEDIA_BUS_FMT_SGRBG8_1X8 to V4L2_PIX_FMT_SGRBG8.
+		 */
+		.name = "SGRBG8",
+		.fourcc = V4L2_PIX_FMT_SGRBG8,
+		.depth = 8,
+		.mbus_code = MEDIA_BUS_FMT_SGRBG8_1X8,
+	}, {
 		.name = "Y10",
 		.fourcc = V4L2_PIX_FMT_Y10,
 		.depth = 10,

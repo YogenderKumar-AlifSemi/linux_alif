@@ -51,44 +51,18 @@ static int parse_camera_nodes(struct media_entity *start,
 	return 0;
 }
 
-static int set_format_to_entity(struct media_entity *entity,
-				struct v4l2_subdev_format *fmt,
-				struct v4l2_subdev_state *state,
-				struct device *dev)
+static int apply_pad_format(struct v4l2_subdev *sd, int pad,
+			    struct v4l2_subdev_format *fmt,
+			    const struct v4l2_mbus_framefmt *mbus,
+			    struct v4l2_subdev_state *state,
+			    struct device *dev)
 {
-	struct v4l2_subdev *sd;
 	struct v4l2_subdev_format entity_fmt;
-	u32 check_flag;
-	int pad = -1;
 	int ret;
-	int i;
-
-	if (!is_media_entity_v4l2_subdev(entity))
-		return 0;
-
-	sd = media_entity_to_v4l2_subdev(entity);
 
 	entity_fmt = *fmt;
-
-	if (is_sensor_entity(entity))
-		check_flag = MEDIA_PAD_FL_SOURCE;
-	else
-		check_flag = MEDIA_PAD_FL_SINK;
-
-	for (i = 0; i < entity->num_pads; i++) {
-		if (entity->pads[i].flags & check_flag) {
-			pad = i;
-			break;
-		}
-	}
-
-	if (pad < 0) {
-		dev_err(dev, "Entity %s has no valid pad for format setting\n",
-			entity->name);
-		return -EINVAL;
-	}
-
 	entity_fmt.pad = pad;
+	entity_fmt.format = *mbus;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
 		struct v4l2_subdev_state *sd_state;
@@ -103,15 +77,74 @@ static int set_format_to_entity(struct media_entity *entity,
 
 	if (ret && ret != -ENOIOCTLCMD) {
 		dev_err(dev, "Failed to set format on %s pad %d: %d\n",
-			entity->name, pad, ret);
+			sd->entity.name, pad, ret);
 		return ret;
 	}
 
-	/*
-	 * Update the main fmt struct with the clamped/actual format
-	 * so the next node in the pipeline gets the correct dimensions.
-	 */
 	fmt->format = entity_fmt.format;
+	return 0;
+}
+
+static int set_format_to_entity(struct media_entity *entity,
+				struct v4l2_subdev_format *fmt,
+				const struct v4l2_mbus_framefmt *requested,
+				struct v4l2_subdev_state *state,
+				struct device *dev)
+{
+	struct v4l2_subdev *sd;
+	struct v4l2_mbus_framefmt incoming;
+	int sink_pad = -1;
+	int source_pad = -1;
+	int ret;
+	int i;
+
+	if (!is_media_entity_v4l2_subdev(entity))
+		return 0;
+
+	sd = media_entity_to_v4l2_subdev(entity);
+	incoming = fmt->format;
+
+	for (i = 0; i < entity->num_pads; i++) {
+		if (sink_pad < 0 && (entity->pads[i].flags & MEDIA_PAD_FL_SINK))
+			sink_pad = i;
+		if (source_pad < 0 &&
+		    (entity->pads[i].flags & MEDIA_PAD_FL_SOURCE))
+			source_pad = i;
+	}
+
+	if (is_sensor_entity(entity)) {
+		if (source_pad < 0) {
+			dev_err(dev, "Entity %s has no source pad\n",
+				entity->name);
+			return -EINVAL;
+		}
+
+		return apply_pad_format(sd, source_pad, fmt, &incoming,
+					state, dev);
+	}
+
+	if (sink_pad >= 0) {
+		ret = apply_pad_format(sd, sink_pad, fmt, &incoming,
+				       state, dev);
+		if (ret)
+			return ret;
+	}
+
+	if (source_pad >= 0 && source_pad != sink_pad) {
+		struct v4l2_mbus_framefmt source_fmt;
+
+		source_fmt = fmt->format;
+		source_fmt.code = requested->code;
+
+		ret = apply_pad_format(sd, source_pad, fmt, &source_fmt,
+				       state, dev);
+		if (ret)
+			return ret;
+	} else if (sink_pad < 0) {
+		dev_err(dev, "Entity %s has no valid pad for format setting\n",
+			entity->name);
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -132,18 +165,29 @@ int pipeline_set_format(struct v4l2_subdev *sd,
 			struct v4l2_subdev_format *fmt)
 {
 	struct v4l2_subdev *sensors[ALIF_MAX_CSI_SENSORS] = { NULL };
-	struct media_entity *start = &sd->entity;
+	struct media_entity *start;
 	struct media_entity *entity;
 	struct media_graph graph;
+	struct media_entity *procs[ALIF_MAX_PIPELINE_PROCS];
+	struct v4l2_mbus_framefmt requested;
+	struct v4l2_mbus_framefmt sensor_fmt;
 	struct device *dev;
 	int num_sensors = ALIF_MAX_CSI_SENSORS;
+	int nprocs = 0;
+	int i;
 	int ret;
 
-	if (!sd || !fmt) {
+	if (!sd)
+		return -EINVAL;
+
+	dev = sd->dev;
+	start = &sd->entity;
+
+	if (!fmt) {
 		dev_err(dev, "invalid parameters passed\n");
 		return -EINVAL;
 	}
-	dev = sd->dev;
+	requested = fmt->format;
 
 	if (!start->graph_obj.mdev) {
 		dev_err(dev, "Entity not part of media device\n");
@@ -167,30 +211,52 @@ int pipeline_set_format(struct v4l2_subdev *sd,
 
 	media_graph_walk_start(&graph, &sensors[0]->entity);
 
-	dev_dbg(dev, "Processing pipeline from sensor: %s\n",
-		sensors[0]->entity.name);
-
 	while ((entity = media_graph_walk_next(&graph))) {
 		if (!is_media_entity_v4l2_subdev(entity))
 			continue;
-
-		if (entity == start)
+		if (entity == start || is_sensor_entity(entity))
 			continue;
+		if (nprocs >= ALIF_MAX_PIPELINE_PROCS) {
+			media_graph_walk_cleanup(&graph);
+			dev_err(dev, "Too many processing entities in pipeline (max %d)\n",
+				ALIF_MAX_PIPELINE_PROCS);
+			return -EINVAL;
+		}
+		procs[nprocs++] = entity;
+	}
+	media_graph_walk_cleanup(&graph);
 
-		ret = set_format_to_entity(entity, fmt, state, dev);
+	fmt->format = requested;
+	ret = set_format_to_entity(&sensors[0]->entity, fmt, &requested,
+				   state, dev);
+	if (ret) {
+		dev_err(dev, "Failed to set format for entity %s\n",
+			sensors[0]->entity.name);
+		return ret;
+	}
+	sensor_fmt = fmt->format;
+
+	dev_dbg(dev, "Sensor %s accepted %ux%u code:0x%x\n",
+		sensors[0]->entity.name, sensor_fmt.width, sensor_fmt.height,
+		sensor_fmt.code);
+
+	if (!nprocs)
+		return 0;
+
+	fmt->format = sensor_fmt;
+	for (i = 0; i < nprocs; i++) {
+		ret = set_format_to_entity(procs[i], fmt, &requested,
+					   state, dev);
 		if (ret) {
 			dev_err(dev, "Failed to set format for entity %s\n",
-				entity->name);
-			media_graph_walk_cleanup(&graph);
+				procs[i]->name);
 			return ret;
 		}
 
 		dev_dbg(dev, "Set format on %s: %ux%u code:0x%x\n",
-			entity->name, fmt->format.width,
+			procs[i]->name, fmt->format.width,
 			fmt->format.height, fmt->format.code);
 	}
-
-	media_graph_walk_cleanup(&graph);
 
 	dev_dbg(dev, "Format propagation complete: %ux%u code:0x%x\n",
 		fmt->format.width, fmt->format.height, fmt->format.code);

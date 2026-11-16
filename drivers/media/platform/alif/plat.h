@@ -27,6 +27,7 @@
 
 #define N_BUFFERS 4
 #define ALIF_MAX_CSI_SENSORS 2
+#define ALIF_MAX_PIPELINE_PROCS 8
 
 int pipeline_set_format(struct v4l2_subdev *sd,
 			struct v4l2_subdev_state *state,
