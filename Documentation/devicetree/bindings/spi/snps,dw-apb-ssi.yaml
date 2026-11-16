@@ -56,6 +56,10 @@ properties:
         enum:
           - snps,dw-apb-ssi
           - snps,dwc-ssi-1.01a
+      - description: Alif Ensemble DWC SSI SPI Controller
+        items:
+          - const: alif,ensemble-spi
+          - const: snps,dwc-ssi-1.01a
       - description: Microsemi Ocelot/Jaguar2 SoC SPI Controller
         items:
           - enum:
