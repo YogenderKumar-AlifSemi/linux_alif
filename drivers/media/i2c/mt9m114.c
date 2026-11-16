@@ -95,6 +95,22 @@
 #define MT9M114_CAM_SENSOR_CFG_FRAME_LENGTH_LINES_MAX		65535
 #define MT9M114_CAM_SENSOR_CFG_LINE_LENGTH_PCK		CCI_REG16(0xc814)
 #define MT9M114_CAM_SENSOR_CFG_LINE_LENGTH_PCK_MAX		8191
+/* Parallel VGA-ish IFP output widths and matching sensor CFG values. */
+#define MT9M114_PARALLEL_VGA_WIDTH			640
+#define MT9M114_PARALLEL_VGA_WIDTH_BINNED		648
+#define MT9M114_PARALLEL_VGA_HEIGHT			480
+/*
+ * IFP crop inset; configure() subtracts 4 from IFP crop when writing
+ * CAM_SENSOR_CFG window registers.
+ */
+#define MT9M114_PARALLEL_IFP_CROP_BORDER		4
+#define MT9M114_PARALLEL_VGA_Y_ADDR_END			973
+/*
+ * Line length for parallel GRBG8 VGA bring-up; applied in
+ * mt9m114_apply_parallel_timing() after ctrl handler setup so it
+ * overrides the default HBLANK-derived line length for this mode.
+ */
+#define MT9M114_PARALLEL_VGA_LINE_LENGTH_PCK		10723
 #define MT9M114_CAM_SENSOR_CFG_FINE_CORRECTION		CCI_REG16(0xc816)
 #define MT9M114_CAM_SENSOR_CFG_CPIPE_LAST_ROW		CCI_REG16(0xc818)
 #define MT9M114_CAM_SENSOR_CFG_REG_0_DATA		CCI_REG16(0xc826)
@@ -894,7 +910,14 @@ static int mt9m114_configure(struct mt9m114 *sensor,
 			   MT9M114_CAM_OUTPUT_FORMAT_FORMAT_MASK |
 			   MT9M114_CAM_OUTPUT_FORMAT_SWAP_BYTES |
 			   MT9M114_CAM_OUTPUT_FORMAT_SWAP_RED_BLUE);
-	output_format |= ifp_info->output_format;
+	if (sensor->bus_cfg.bus_type == V4L2_MBUS_PARALLEL &&
+	    (ifp_info->output_format &
+	     MT9M114_CAM_OUTPUT_FORMAT_BAYER_FORMAT_MASK) ==
+	    MT9M114_CAM_OUTPUT_FORMAT_BAYER_FORMAT_PROCESSED8)
+		output_format |= MT9M114_CAM_OUTPUT_FORMAT_FORMAT_BAYER |
+				 MT9M114_CAM_OUTPUT_FORMAT_BAYER_FORMAT_RAWR10;
+	else
+		output_format |= ifp_info->output_format;
 
 	cci_write(sensor->regmap, MT9M114_CAM_OUTPUT_FORMAT,
 		  output_format, &ret);
@@ -911,6 +934,26 @@ static int mt9m114_set_frame_rate(struct mt9m114 *sensor)
 		  frame_rate, &ret);
 	cci_write(sensor->regmap, MT9M114_CAM_AET_MAX_FRAME_RATE,
 		  frame_rate, &ret);
+
+	return ret;
+}
+
+/*
+ * Parallel VGA output repeats the last sample until HSYNC unless the line
+ * is this long. Shorter values (e.g. 2 * width + blanking) did not line up
+ * in testing. Y_ADDR_END is two rows short of the full window.
+ *
+ * Called from stream start after __v4l2_ctrl_handler_setup() so these
+ * register values win over V4L2_CID_HBLANK for the first config change.
+ */
+static int mt9m114_apply_parallel_timing(struct mt9m114 *sensor)
+{
+	int ret = 0;
+
+	cci_write(sensor->regmap, MT9M114_CAM_SENSOR_CFG_Y_ADDR_END,
+		  MT9M114_PARALLEL_VGA_Y_ADDR_END, &ret);
+	cci_write(sensor->regmap, MT9M114_CAM_SENSOR_CFG_LINE_LENGTH_PCK,
+		  MT9M114_PARALLEL_VGA_LINE_LENGTH_PCK, &ret);
 
 	return ret;
 }
@@ -940,6 +983,22 @@ static int mt9m114_start_streaming(struct mt9m114 *sensor,
 	ret = __v4l2_ctrl_handler_setup(&sensor->ifp.hdl);
 	if (ret)
 		goto error;
+
+	if (sensor->bus_cfg.bus_type == V4L2_MBUS_PARALLEL) {
+		const struct v4l2_mbus_framefmt *ifp_src_fmt;
+		const struct v4l2_rect *ifp_compose;
+
+		ifp_src_fmt = v4l2_subdev_state_get_format(ifp_state, 1);
+		ifp_compose = v4l2_subdev_state_get_compose(ifp_state, 0);
+
+		if (ifp_src_fmt && ifp_compose &&
+		    ifp_src_fmt->code == MEDIA_BUS_FMT_SGRBG8_1X8 &&
+		    ifp_compose->width == MT9M114_PARALLEL_VGA_WIDTH_BINNED) {
+			ret = mt9m114_apply_parallel_timing(sensor);
+			if (ret)
+				goto error;
+		}
+	}
 
 	/*
 	 * The Change-Config state is transient and moves to the streaming
@@ -1810,14 +1869,41 @@ static int mt9m114_ifp_set_fmt(struct v4l2_subdev *sd,
 	} else {
 		const struct mt9m114_format_info *info;
 
-		/* Only the media bus code can be changed on the source pad. */
+		/*
+		 * On the source pad, userspace normally only selects the
+		 * media-bus code; size follows the sink unless noted below.
+		 */
 		info = mt9m114_format_info(sensor, 1, fmt->format.code);
 
 		format->code = info->code;
 
-		/* If the output format is RAW10, bypass the scaler. */
-		if (format->code == MEDIA_BUS_FMT_SGRBG10_1X10)
+		/*
+		 * Parallel SGRBG8: fix IFP crop/compose and source size for
+		 * the aligned capture window (sink stays full array).
+		 */
+		if (format->code == MEDIA_BUS_FMT_SGRBG8_1X8 &&
+		    sensor->bus_cfg.bus_type == V4L2_MBUS_PARALLEL) {
+			struct v4l2_rect *crop;
+			struct v4l2_rect *compose;
+
+			crop = v4l2_subdev_state_get_crop(state, 0);
+			crop->left = MT9M114_PARALLEL_IFP_CROP_BORDER;
+			crop->top = MT9M114_PARALLEL_IFP_CROP_BORDER;
+			crop->width = MT9M114_PARALLEL_VGA_WIDTH_BINNED;
+			crop->height = MT9M114_PARALLEL_VGA_HEIGHT;
+
+			compose = v4l2_subdev_state_get_compose(state, 0);
+			compose->left = 0;
+			compose->top = 0;
+			compose->width = MT9M114_PARALLEL_VGA_WIDTH_BINNED;
+			compose->height = MT9M114_PARALLEL_VGA_HEIGHT;
+
+			format->width = MT9M114_PARALLEL_VGA_WIDTH_BINNED;
+			format->height = MT9M114_PARALLEL_VGA_HEIGHT;
+		} else if (format->code == MEDIA_BUS_FMT_SGRBG10_1X10) {
+			/* RAW10 bypasses the scaler. */
 			*format = *v4l2_subdev_state_get_format(state, 0);
+		}
 	}
 
 	fmt->format = *format;
