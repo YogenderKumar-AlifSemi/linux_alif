@@ -606,7 +606,7 @@
 		};
 
 		spi0: spi@48103000 {
-			compatible = "snps,dwc-ssi-1.01a";
+			compatible = "alif,ensemble-spi", "snps,dwc-ssi-1.01a";
 			reg = <0x48103000 0x1000>;
 			num-cs = <1>;
 			interrupts = <GIC_SPI 126 IRQ_TYPE_LEVEL_HIGH>;
@@ -615,11 +615,14 @@
 			reg-io-width = <4>;
 			spi-tx-bus-width = <1>;
 			spi-rx-bus-width = <1>;
+			dmas = <&event_router 20 2>,
+			       <&event_router 16 2>;
+			dma-names = "tx","rx";
 			status = "disabled";
 		};
 
 		spi1: spi@48104000 {
-			compatible = "snps,dwc-ssi-1.01a";
+			compatible = "alif,ensemble-spi", "snps,dwc-ssi-1.01a";
 			reg = <0x48104000 0x1000>;
 			num-cs = <1>;
 			interrupts = <GIC_SPI 127 IRQ_TYPE_LEVEL_HIGH>;
@@ -628,11 +631,14 @@
 			reg-io-width = <4>;
 			spi-tx-bus-width = <1>;
 			spi-rx-bus-width = <1>;
+			dmas = <&event_router 21 2>,
+			       <&event_router 17 2>;
+			dma-names = "tx","rx";
 			status = "disabled";
 		};
 
 		spi2: spi@48105000 {
-			compatible = "snps,dwc-ssi-1.01a";
+			compatible = "alif,ensemble-spi", "snps,dwc-ssi-1.01a";
 			reg = <0x48105000 0x1000>;
 			num-cs = <1>;
 			interrupts = <GIC_SPI 128 IRQ_TYPE_LEVEL_HIGH>;
@@ -641,11 +647,14 @@
 			reg-io-width = <4>;
 			spi-tx-bus-width = <1>;
 			spi-rx-bus-width = <1>;
+			dmas = <&event_router 22 2>,
+			       <&event_router 18 2>;
+			dma-names = "tx","rx";
 			status = "disabled";
 		};
 
 		spi3: spi@48106000 {
-			compatible = "snps,dwc-ssi-1.01a";
+			compatible = "alif,ensemble-spi", "snps,dwc-ssi-1.01a";
 			reg = <0x48106000 0x1000>;
 			interrupts = <GIC_SPI 129 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&psclks ENSEMBLE_SPI3_SS_IN_VAL_MST_CLK>;
@@ -655,6 +664,9 @@
 			spi-tx-bus-width = <1>;
 			spi-rx-bus-width = <1>;
 			spi-max-frequency= <1000000>;
+			dmas = <&event_router 23 2>,
+			       <&event_router 19 2>;
+			dma-names = "tx","rx";
 			status = "disabled";
 		};
 
