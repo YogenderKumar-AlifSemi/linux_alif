@@ -66,6 +66,7 @@
 		backlight = <&panel_backlight>;
 		vccio-supply = <&reg_1p8v>;
 		vdd-supply = <&reg_3p3v>;
+		status = DSI_STATUS;
 
 		port {
 			dsipanel_in: endpoint {
