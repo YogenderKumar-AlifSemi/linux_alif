@@ -45,11 +45,24 @@
 		regulator-always-on;
 		status = "okay";
 	};
-	reg_2p7v: regulator-2v7 {
+	/*
+	 * C_EN_MIPI_PWR is pad P7_5 and is pulled down. Drive it high
+	 * from this always-on regulator. enable-active-high is the
+	 * polarity; there is no startup delay.
+	 */
+	reg_mipi_pwr: regulator-mipi-pwr {
 		compatible = "regulator-fixed";
-		regulator-name = "vaa-supply";
-		regulator-min-microvolt = <2700000>;
-		regulator-max-microvolt = <2700000>;
+		regulator-name = "c-en-mipi-pwr";
+		gpios = <&port8 5 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-always-on;
+	};
+	reg_2p7v: regulator-2v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "v-2v8";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		vin-supply = <&reg_mipi_pwr>;
 		regulator-always-on;
 		status = "okay";
 	};
@@ -63,9 +76,10 @@
 	};
 	reg_1p2v: regulator-1v2 {
 		compatible = "regulator-fixed";
-		regulator-name = "vdd-supply";
+		regulator-name = "v-1v2";
 		regulator-min-microvolt = <1200000>;
 		regulator-max-microvolt = <1200000>;
+		vin-supply = <&reg_mipi_pwr>;
 		regulator-always-on;
 		status = "okay";
 	};
@@ -704,6 +718,11 @@
 		PIN_P0_3__ANA_S3        0x23
 		PIN_P1_3__ANA_S11       0x23
 		PIN_P1_7__ANA_S15       0x23
+		>;
+	};
+	pinctrl_mipi_pwr: mipi-pwr-grp {
+		pinmux = <
+			PIN_P7_5__GPIO		0x23 /* C_EN_MIPI_PWR */
 		>;
 	};
 	pinctrl_sd_reset: sd_resetgrp {

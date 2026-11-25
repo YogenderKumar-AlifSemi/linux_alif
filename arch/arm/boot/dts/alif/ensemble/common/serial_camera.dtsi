@@ -30,6 +30,12 @@
 
 #include ENSEMBLE_CAMERA_SENSOR_DTSI
 
+&gpio7 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_mipi_pwr>;
+	status = "okay";
+};
+
 &dphy {
 	status = CSI_STATUS;
 };
