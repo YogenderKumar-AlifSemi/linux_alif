@@ -22,6 +22,7 @@
 #define OV5675_LINK_FREQ_450MHZ		450000000ULL
 #define OV5675_SCLK			90000000LL
 #define OV5675_XVCLK_19_2		19200000
+#define OV5675_XVCLK_20			20000000
 #define OV5675_DATA_LANES		2
 #define OV5675_RGB_DEPTH		10
 
@@ -1203,7 +1204,12 @@ static int ov5675_get_hwcfg(struct ov5675 *ov5675, struct device *dev)
 		}
 	}
 
-	if (xvclk_rate != OV5675_XVCLK_19_2) {
+	/*
+	 * PLL tables are written for 19.2 MHz. Ensemble DevKit extclk is
+	 * syst_aclk / 20 (20 MHz); that rate uses the same table.
+	 */
+	if (xvclk_rate != OV5675_XVCLK_19_2 &&
+	    xvclk_rate != OV5675_XVCLK_20) {
 		dev_err(dev, "external clock rate %u is unsupported",
 			xvclk_rate);
 		return -EINVAL;
