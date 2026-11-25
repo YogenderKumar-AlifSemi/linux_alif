@@ -691,7 +691,11 @@ static int cpi_hw_set_geometry(struct cpi_dev *cpi)
 	 * so the line never matches the ISP window.
 	 */
 	if (is_mipi) {
-		val = CFG_MIPI_CSI | CFG_WAIT_VSYNC;
+		/*
+		 * CSI halt: stall the CSI-2 pixel source while the CPI FIFO is
+		 * full instead of overrunning it and dropping pixels.
+		 */
+		val = CFG_MIPI_CSI | CFG_CSI_HALT_EN | CFG_WAIT_VSYNC;
 		val |= ((data_mode & CFG_DATA_MODE_MASK) << CFG_DATA_MODE_MASK_SHIFT) |
 			((data_mask & CFG_DATA_MASK) << CFG_DATA_MASK_SHIFT);
 		if (cpi->version == CPI_VERSION_2) {
