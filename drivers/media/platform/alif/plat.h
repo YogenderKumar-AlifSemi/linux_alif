@@ -86,6 +86,8 @@ struct dmaqueue {
 	wait_queue_head_t wq;
 };
 
+struct gen_pool;
+
 struct cpi_dev {
 	u32 version;
 	struct platform_device *pdev;
@@ -106,6 +108,7 @@ struct cpi_dev {
 	struct list_head fb_list_head;
 	struct rx_buffer *active;
 
+	struct gen_pool *sram_pool;
 	void *bounce_cpu;
 	dma_addr_t bounce_dma;
 	size_t bounce_size;

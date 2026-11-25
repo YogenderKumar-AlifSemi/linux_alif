@@ -10,8 +10,12 @@
 
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
+#include <linux/genalloc.h>
+#include <linux/mm.h>
+#include <linux/numa.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/io.h>
+#include <linux/refcount.h>
 #include <linux/iopoll.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
@@ -786,8 +790,8 @@ static void cpi_free_bounce(struct cpi_dev *cpi)
 	if (!cpi->bounce_cpu)
 		return;
 
-	dma_free_coherent(&cpi->pdev->dev, cpi->bounce_size,
-			  cpi->bounce_cpu, cpi->bounce_dma);
+	gen_pool_free(cpi->sram_pool, (unsigned long)cpi->bounce_cpu,
+		      cpi->bounce_size);
 	cpi->bounce_cpu = NULL;
 	cpi->bounce_dma = 0;
 	cpi->bounce_size = 0;
@@ -806,7 +810,7 @@ static int cpi_alloc_bounce(struct cpi_dev *cpi)
 		cpi_free_bounce(cpi);
 	}
 
-	cpi->bounce_cpu = dma_alloc_coherent(&cpi->pdev->dev, size, &cpi->bounce_dma, GFP_KERNEL);
+	cpi->bounce_cpu = gen_pool_dma_zalloc(cpi->sram_pool, size, &cpi->bounce_dma);
 	if (!cpi->bounce_cpu)
 		return -ENOMEM;
 
@@ -836,6 +840,113 @@ static void cpi_copy_bounce_to_user(struct cpi_dev *cpi)
 	memcpy(buf->cpu_addr, cpi->bounce_cpu, size);
 }
 
+struct cpi_sram_buf {
+	struct cpi_dev *cpi;
+	void *cpu;
+	dma_addr_t dma;
+	unsigned long size;
+	refcount_t refcount;
+};
+
+/*
+ * The reserved SRAM pool is handed out by gen_pool in page-sized pieces.
+ * dma_alloc_coherent() on a shared-dma-pool rounds the same request up to
+ * the next power of two, so a 2.5MB frame does not fit in this 3MB region.
+ */
+static void *cpi_sram_alloc(struct vb2_buffer *vb, struct device *dev,
+			    unsigned long size)
+{
+	struct cpi_dev *cpi = vb2_get_drv_priv(vb->vb2_queue);
+	struct cpi_sram_buf *buf;
+
+	buf = kzalloc(sizeof(*buf), GFP_KERNEL);
+	if (!buf)
+		return ERR_PTR(-ENOMEM);
+
+	buf->cpu = gen_pool_dma_zalloc(cpi->sram_pool, size, &buf->dma);
+	if (!buf->cpu) {
+		dev_err(dev, "sram alloc of size %lu failed\n", size);
+		kfree(buf);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	buf->cpi = cpi;
+	buf->size = size;
+	refcount_set(&buf->refcount, 1);
+	return buf;
+}
+
+static void cpi_sram_put(void *buf_priv)
+{
+	struct cpi_sram_buf *buf = buf_priv;
+
+	if (!refcount_dec_and_test(&buf->refcount))
+		return;
+
+	gen_pool_free(buf->cpi->sram_pool, (unsigned long)buf->cpu, buf->size);
+	kfree(buf);
+}
+
+static void *cpi_sram_cookie(struct vb2_buffer *vb, void *buf_priv)
+{
+	struct cpi_sram_buf *buf = buf_priv;
+
+	return &buf->dma;
+}
+
+static void *cpi_sram_vaddr(struct vb2_buffer *vb, void *buf_priv)
+{
+	struct cpi_sram_buf *buf = buf_priv;
+
+	return buf->cpu;
+}
+
+static unsigned int cpi_sram_num_users(void *buf_priv)
+{
+	struct cpi_sram_buf *buf = buf_priv;
+
+	return refcount_read(&buf->refcount);
+}
+
+static int cpi_sram_mmap(void *buf_priv, struct vm_area_struct *vma)
+{
+	struct cpi_sram_buf *buf = buf_priv;
+	unsigned long size = vma->vm_end - vma->vm_start;
+
+	if (!buf || size > buf->size)
+		return -EINVAL;
+
+	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+	return remap_pfn_range(vma, vma->vm_start, PFN_DOWN(buf->dma), size,
+			       vma->vm_page_prot);
+}
+
+static const struct vb2_mem_ops cpi_sram_memops = {
+	.alloc		= cpi_sram_alloc,
+	.put		= cpi_sram_put,
+	.cookie		= cpi_sram_cookie,
+	.vaddr		= cpi_sram_vaddr,
+	.num_users	= cpi_sram_num_users,
+	.mmap		= cpi_sram_mmap,
+};
+
+static unsigned int cpi_sram_max_buffers(struct cpi_dev *cpi, unsigned long size)
+{
+	size_t avail;
+	unsigned long chunk;
+
+	chunk = PAGE_ALIGN(size);
+	if (!cpi->sram_pool || !chunk)
+		return 1;
+
+	avail = gen_pool_avail(cpi->sram_pool);
+	if (avail < chunk)
+		return 1;
+
+	return min_t(unsigned int, N_BUFFERS, avail / chunk);
+}
+
 static int cpi_queue_setup(struct vb2_queue *vq, unsigned int *nbuffers,
 			   unsigned int *nplanes, unsigned int sizes[],
 			struct device *alloc_devs[])
@@ -855,8 +966,9 @@ static int cpi_queue_setup(struct vb2_queue *vq, unsigned int *nbuffers,
 	if (vq->memory == VB2_MEMORY_USERPTR)
 		vq->mem_ops = &vb2_vmalloc_memops;
 	else
-		vq->mem_ops = &vb2_dma_contig_memops;
+		vq->mem_ops = &cpi_sram_memops;
 
+	*nbuffers = min(*nbuffers, cpi_sram_max_buffers(cpi, size));
 	if (*nbuffers > N_BUFFERS)
 		*nbuffers = N_BUFFERS;
 	*nplanes = 1;
@@ -1117,7 +1229,7 @@ static int cpi_register_video_device(struct cpi_dev *cpi)
 	q->io_modes = VB2_MMAP | VB2_USERPTR | VB2_READ;
 
 	q->ops = &vb2_video_qops;
-	q->mem_ops = &vb2_dma_contig_memops;
+	q->mem_ops = &cpi_sram_memops;
 
 	q->buf_struct_size = sizeof(struct rx_buffer);
 	q->drv_priv = cpi;
@@ -2123,6 +2235,53 @@ error_media_device_registration:
 	return ret;
 }
 
+static int cpi_sram_pool_init(struct cpi_dev *cpi)
+{
+	struct device *dev = &cpi->pdev->dev;
+	struct device_node *np;
+	struct reserved_mem *rmem;
+	void *virt;
+	int ret;
+
+	np = of_parse_phandle(dev->of_node, "memory-region", 0);
+	if (!np) {
+		dev_err(dev, "missing CPI frame-buffer memory region\n");
+		return -ENODEV;
+	}
+
+	rmem = of_reserved_mem_lookup(np);
+	of_node_put(np);
+	if (!rmem) {
+		dev_err(dev, "failed to look up CPI frame-buffer region\n");
+		return -ENODEV;
+	}
+
+	virt = devm_memremap(dev, rmem->base, rmem->size, MEMREMAP_WC);
+	if (IS_ERR(virt)) {
+		dev_err(dev, "failed to map CPI frame buffer at %pa size %pa\n",
+			&rmem->base, &rmem->size);
+		return PTR_ERR(virt);
+	}
+
+	/*
+	 * Page granularity. A 2523136-byte frame occupies 616 pages and fits
+	 * in the 3MB region. The coherent DMA pool cannot do that: it rounds
+	 * the allocation up to 4MB.
+	 */
+	cpi->sram_pool = devm_gen_pool_create(dev, PAGE_SHIFT, NUMA_NO_NODE,
+					      "cpi-fb");
+	if (IS_ERR(cpi->sram_pool))
+		return PTR_ERR(cpi->sram_pool);
+
+	ret = gen_pool_add_virt(cpi->sram_pool, (unsigned long)virt, rmem->base,
+				rmem->size, NUMA_NO_NODE);
+	if (ret)
+		dev_err(dev, "failed to add CPI frame buffer to pool: %d\n",
+			ret);
+
+	return ret;
+}
+
 static int cpi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -2141,8 +2300,9 @@ static int cpi_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, cpi);
 
-	/* Use reserved SRAM region for frame buffer DMA allocations */
-	of_reserved_mem_device_init(dev);
+	ret = cpi_sram_pool_init(cpi);
+	if (ret)
+		return ret;
 
 	cpi->active = NULL;
 	cpi->axi_bus_ep = false;
@@ -2259,7 +2419,6 @@ static void cpi_remove(struct platform_device *pdev)
 	}
 
 	cpi_free_bounce(cpi);
-	of_reserved_mem_device_release(&pdev->dev);
 }
 
 static const struct of_device_id cpi_of_match[] = {
