@@ -20,6 +20,9 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
+#include <linux/of.h>
+#include <linux/of_fdt.h>
+#include <linux/libfdt.h>
 #include <linux/property.h>
 #include <linux/videodev2.h>
 #include <media/media-entity.h>
@@ -1206,8 +1209,8 @@ static int cpi_register_video_device(struct cpi_dev *cpi)
 	int ret;
 
 	/*
-	 * If ISP is connected, video device creation and IOCTL support is ISP
-	 * device's responsibility.
+	 * An enabled remote on the output port owns capture. The endpoint
+	 * alone does not: a disabled remote still uses this video device.
 	 */
 	if (cpi->is_isp_connected)
 		return 0;
@@ -1238,21 +1241,26 @@ static int cpi_register_video_device(struct cpi_dev *cpi)
 	q->dev = &cpi->pdev->dev;
 
 	ret = vb2_queue_init(q);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(&cpi->pdev->dev, "vb2_queue_init failed: %d\n", ret);
 		return ret;
+	}
 
 	vfd->entity.ops = NULL;
 
 	cpi->vd_pad.flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT;
 	ret = media_entity_pads_init(&vfd->entity, 1, &cpi->vd_pad);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(&cpi->pdev->dev, "video pad init failed: %d\n", ret);
 		return ret;
+	}
 
 	video_set_drvdata(vfd, cpi);
 	vfd->lock = &cpi->lock;
 
 	ret = video_register_device(vfd, VFL_TYPE_VIDEO, -1);
 	if (ret < 0) {
+		dev_err(&cpi->pdev->dev, "video_register_device failed: %d\n", ret);
 		media_entity_cleanup(&vfd->entity);
 		cpi->ve.pipe = NULL;
 		return ret;
@@ -1923,8 +1931,10 @@ static int cpi_subdev_notifier_complete(struct v4l2_async_notifier *notifier)
 		return 0;
 
 	ret = v4l2_device_register_subdev_nodes(&cpi->v4l2_dev);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "register subdev nodes failed: %d\n", ret);
 		return ret;
+	}
 
 	/*
 	 * Only now, after the remote CSI-2/sensor subdev has bound
@@ -2164,33 +2174,85 @@ static irqreturn_t cpi_isr_thread(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
+static bool cpi_graph_container(const char *name)
+{
+	if (!name)
+		return false;
+	if (!strcmp(name, "ports") || !strcmp(name, "port"))
+		return true;
+
+	return !strncmp(name, "port@", 5);
+}
+
+static bool cpi_fdt_node_available(const void *blob, int offset)
+{
+	const char *status;
+	int len;
+
+	status = fdt_getprop(blob, offset, "status", &len);
+	if (!status || len <= 0)
+		return true;
+
+	return !strcmp(status, "okay") || !strcmp(status, "ok");
+}
+
+/*
+ * Climb from the remote endpoint to the device that owns it. port and
+ * ports are skipped. The first other node is that device; its status
+ * decides whether it owns capture.
+ */
+static bool cpi_remote_device_enabled(struct device_node *endpoint)
+{
+	const void *blob = initial_boot_params;
+	int offset, parent;
+	const char *name;
+
+	if (!blob || !endpoint || !endpoint->phandle)
+		return false;
+
+	offset = fdt_node_offset_by_phandle(blob, endpoint->phandle);
+	if (offset < 0)
+		return false;
+
+	for (;;) {
+		parent = fdt_parent_offset(blob, offset);
+		if (parent < 0)
+			return false;
+
+		name = fdt_get_name(blob, parent, NULL);
+		if (!cpi_graph_container(name))
+			return cpi_fdt_node_available(blob, parent);
+
+		offset = parent;
+	}
+}
+
 static int cpi_isp_present(struct cpi_dev *cpi)
 {
-	struct device *dev = &cpi->pdev->dev;
-	struct fwnode_handle *ep, *remote, *parent;
+	struct fwnode_handle *ep, *remote;
+	struct device_node *remote_np;
 
 	cpi->is_isp_connected = false;
 
-	ep = fwnode_graph_get_endpoint_by_id(dev_fwnode(dev),
-					     PORT_OUTPUT, 0, 0);
+	/*
+	 * Look up the output endpoint even when its remote is disabled.
+	 * /dev/video0 is skipped only when that remote device is enabled.
+	 */
+	ep = fwnode_graph_get_endpoint_by_id(dev_fwnode(&cpi->pdev->dev),
+					     PORT_OUTPUT, 0,
+					     FWNODE_GRAPH_DEVICE_DISABLED);
 	if (!ep)
 		return 0;
 
 	remote = fwnode_graph_get_remote_endpoint(ep);
-	if (!remote) {
-		fwnode_handle_put(ep);
-		return 0;
-	}
-	fwnode_handle_put(remote);
-
-	parent = fwnode_graph_get_remote_port_parent(ep);
 	fwnode_handle_put(ep);
-	if (!parent)
+	if (!remote)
 		return 0;
 
-	/* Disabled ISP node keeps the CPI AXI dump path. */
-	cpi->is_isp_connected = fwnode_device_is_available(parent);
-	fwnode_handle_put(parent);
+	remote_np = to_of_node(remote);
+	if (remote_np)
+		cpi->is_isp_connected = cpi_remote_device_enabled(remote_np);
+	fwnode_handle_put(remote);
 
 	return 0;
 }
