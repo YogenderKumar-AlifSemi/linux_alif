@@ -3,6 +3,12 @@
  * MIPI CSI-2 (serial) camera graph for Ensemble boards.
  * Mutually exclusive with parallel_camera.dtsi; selected when
  * CPI_PARALLEL is 0.
+ *
+ * CSI, the ISP output port, and CPI stay here. The selfie sensor is
+ * camera/<name>.dtsi, included through ENSEMBLE_CAMERA_SENSOR_DTSI.
+ * Yocto sets that path from CAMERA_SENSOR. Every fragment labels its
+ * source endpoint sensor_csi2_ep and points it at &csi2_in, so this
+ * file does not change when a sensor is added.
  */
 
 / {
@@ -14,37 +20,15 @@
 		i2c-parent = <&i2c1>;
 		status = "okay";
 
-		i2c@0 {
+		selfie_i2c: i2c@0 {
 			#address-cells = <1>;
 			#size-cells = <0>;
 			reg = <0>;
-
-			arx3a0_selfie: arx3a0@36 {
-				compatible = "onnn,arx3a0";
-				reg = <0x36>;
-				clocks = <&psclks ENSEMBLE_EXT_CLK>;
-				clock-names = "extclk";
-				pinctrl-0 = <&pinctrl_csi_cam>;
-				pinctrl-names = "default";
-				reset-gpios = <&port15 4 GPIO_ACTIVE_LOW>;
-				power-gpios = <&port8 5 GPIO_ACTIVE_HIGH>;
-				vaa-supply = <&reg_2p7v>;
-				vdd-supply = <&reg_1p2v>;
-				vdd_io-supply = <&reg_1p8v>;
-				status = "okay";
-
-				port {
-					arx3a0_csi2_ep: endpoint {
-						bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
-						data-lanes = <1 2>;
-						remote-endpoint = <&csi2_in>;
-						link-frequencies = /bits/ 64 <400000000>;
-					};
-				};
-			};
 		};
 	};
 };
+
+#include ENSEMBLE_CAMERA_SENSOR_DTSI
 
 &dphy {
 	status = CSI_STATUS;
@@ -61,7 +45,7 @@
 			reg = <0>;
 			csi2_in: endpoint {
 				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
-				remote-endpoint = <&arx3a0_csi2_ep>;
+				remote-endpoint = <&sensor_csi2_ep>;
 				data-lanes = <1 2>;
 			};
 		};

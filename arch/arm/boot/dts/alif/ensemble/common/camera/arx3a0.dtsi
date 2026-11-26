@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * ARX3A0 on the Ensemble selfie connector.
+ * Included by serial_camera.dtsi when
+ * ENSEMBLE_CAMERA_SENSOR_DTSI is "camera/arx3a0.dtsi".
+ *
+ * The source endpoint label sensor_csi2_ep is the same in every sensor
+ * fragment. CSI receives it as &csi2_in.
+ */
+
+&selfie_i2c {
+	selfie_camera: camera@36 {
+		compatible = "onnn,arx3a0";
+		reg = <0x36>;
+		clocks = <&psclks ENSEMBLE_EXT_CLK>;
+		clock-names = "extclk";
+		pinctrl-0 = <&pinctrl_csi_cam>;
+		pinctrl-names = "default";
+		reset-gpios = <&port15 4 GPIO_ACTIVE_LOW>;
+		vaa-supply = <&reg_2p7v>;
+		vdd-supply = <&reg_1p2v>;
+		vdd_io-supply = <&reg_1p8v>;
+		status = "okay";
+
+		port {
+			sensor_csi2_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				data-lanes = <1 2>;
+				remote-endpoint = <&csi2_in>;
+				link-frequencies = /bits/ 64 <400000000>;
+			};
+		};
+	};
+};

@@ -96,6 +96,15 @@
  */
 #define CPI_PARALLEL 0
 
+/*
+ * Selfie sensor fragment on the MIPI CSI-2 connector, used when
+ * CPI_PARALLEL is 0. serial_camera.dtsi includes this quoted path.
+ * Yocto/DCT rewrites it from CAMERA_SENSOR ("arx3a0" -> camera/arx3a0.dtsi).
+ * A new sensor is a new file under camera/ whose CSI-2 source endpoint
+ * is labeled sensor_csi2_ep and points at &csi2_in.
+ */
+#define ENSEMBLE_CAMERA_SENSOR_DTSI "camera/arx3a0.dtsi"
+
 /* CSI defines */
 #define CSI_STATUS "disabled"
 
