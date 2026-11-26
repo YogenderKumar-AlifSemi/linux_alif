@@ -110,7 +110,27 @@ static const struct plat_csi_fmt cpi_formats[] = {
 		.name = "Y10",
 		.fourcc = V4L2_PIX_FMT_Y10,
 		.depth = 10,
+		.mbus_code = MEDIA_BUS_FMT_Y10_1X10,
+	}, {
+		.name = "SBGGR10",
+		.fourcc = V4L2_PIX_FMT_SBGGR10,
+		.depth = 10,
 		.mbus_code = MEDIA_BUS_FMT_SBGGR10_1X10,
+	}, {
+		.name = "SRGGB10",
+		.fourcc = V4L2_PIX_FMT_SRGGB10,
+		.depth = 10,
+		.mbus_code = MEDIA_BUS_FMT_SRGGB10_1X10,
+	}, {
+		.name = "SGBRG10",
+		.fourcc = V4L2_PIX_FMT_SGBRG10,
+		.depth = 10,
+		.mbus_code = MEDIA_BUS_FMT_SGBRG10_1X10,
+	}, {
+		.name = "SGRBG10",
+		.fourcc = V4L2_PIX_FMT_SGRBG10,
+		.depth = 10,
+		.mbus_code = MEDIA_BUS_FMT_SGRBG10_1X10,
 	}, {
 		.name = "Y12P",
 		.fourcc = V4L2_PIX_FMT_Y12P,
